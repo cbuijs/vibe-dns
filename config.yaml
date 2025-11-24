@@ -1,0 +1,177 @@
+# -----------------------------------------------------------------------------
+# Project: Filtering DNS Server
+# Version: 1.5.0
+# Updated: 2025-11-24 16:45:00
+# -----------------------------------------------------------------------------
+
+logging:
+  level: "INFO"
+  enable_console: true
+  enable_file: true
+  file_path: "./dns_server.log"
+  enable_syslog: true
+  syslog_address: "/dev/log"
+  syslog_protocol: "UDP"
+
+# -----------------------------------------------------------------------------
+# 2. General Server Networking
+# -----------------------------------------------------------------------------
+server:
+  bind_ip: 
+    - "0.0.0.0"
+    - "::"
+  bind_interfaces: []
+  port_udp: 53
+  port_tcp: 53
+  listener_validation: "drop"
+  dot_enabled: true
+  port_dot: 853
+  tls_cert_file: "./cert.pem"
+  tls_key_file: "./key.pem"
+  dot_server_names: 
+    - "dns.example.com"
+  doh_enabled: true
+  port_doh: 443
+  doh_server_names:
+    - "dns.example.com"
+  doh_paths: 
+    - "/dns-query"
+
+# -----------------------------------------------------------------------------
+# 3. Upstream Servers
+# -----------------------------------------------------------------------------
+upstream:
+  servers:
+    - "udp://1.1.1.1:53"
+    - "tls://dns.quad9.net:853#9.9.9.9"
+  bootstrap:
+    - "8.8.8.8"
+  monitor_interval: 60
+  monitor_on_query: false
+  test_domain: "www.google.com"
+
+# -----------------------------------------------------------------------------
+# 4. Caching & Deduplication
+# -----------------------------------------------------------------------------
+cache:
+  size: 10000
+  gc_interval: 300
+  prefetch_margin: 10
+  negative_ttl: 60
+  prefetch_min_hits: 3
+
+deduplication:
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# 5. Rate Limiting
+# -----------------------------------------------------------------------------
+rate_limit:
+  enabled: true
+  window_seconds: 60
+  ipv4_mask: 24
+  ipv6_mask: 64
+  udp_threshold: 100         
+  total_threshold: 200       
+
+# -----------------------------------------------------------------------------
+# 6. Response Modification
+# -----------------------------------------------------------------------------
+response:
+  round_robin_enabled: false
+  cname_collapse: true
+  minimize_response: false
+  min_ttl: 60
+  max_ttl: 86400
+  ttl_sync_mode: "none"
+  block_rcode: "REFUSED"
+  block_ttl: 60
+  block_ip: "NULL"
+  match_answers_globally: false
+
+# -----------------------------------------------------------------------------
+# 7. Client Groups
+# -----------------------------------------------------------------------------
+groups:
+  kids_devices:
+    - "192.168.1.50"
+  guest_network:
+    - "192.168.2.0/24"
+
+# -----------------------------------------------------------------------------
+# 8. Schedules
+# -----------------------------------------------------------------------------
+schedules:
+  bedtime:
+    days: ["Mon", "Tue", "Wed", "Thu", "Sun"]
+    slots:
+      - { start: "21:00", end: "07:00" }
+
+# -----------------------------------------------------------------------------
+# 9. Assignments
+# -----------------------------------------------------------------------------
+assignments:
+  kids_devices:
+    policy: "StrictPolicy"
+    schedule: "bedtime"
+    schedule_policy: "BLOCK"
+  guest_network:
+    policy: "GuestPolicy"
+
+mac_cache_refresh_interval: 300
+list_refresh_interval: 86400
+
+# -----------------------------------------------------------------------------
+# 10. Filtering & Lists
+# -----------------------------------------------------------------------------
+# Global switch for domain categorization logging/monitoring.
+# If true, all queries are checked against categories and logged if they match,
+# regardless of whether the policy blocks them.
+categorization_enabled: false
+
+# Path to the categories JSON file
+categories_file: "categories.json"
+
+lists:
+  ads_basic:
+    - source: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+      hosts_domain_type: "inclusive"
+  custom_block:
+    - "./my_blocklist.txt"
+  custom_allow:
+    - "./my_allowlist.txt"
+
+# -----------------------------------------------------------------------------
+# 11. Policies
+# -----------------------------------------------------------------------------
+policies:
+  StrictPolicy:
+    allow:
+      - "custom_allow"
+    block:
+      - "ads_basic"
+      - "custom_block"
+    allowed_types: 
+      - "A"
+      - "AAAA"
+      - "CNAME"
+      - "HTTPS"
+      - "SRV"
+    
+    # Rules for blocking based on categorization confidence
+    category_rules:
+      gambling:
+        min_confidence: 85
+        action: "BLOCK"
+      social_media:
+        min_confidence: 60
+        action: "BLOCK"
+      
+  GuestPolicy:
+    block:
+      - "ads_basic"
+    blocked_types:
+      - "TXT"
+      - "ANY"
+      - "NULL"
+
