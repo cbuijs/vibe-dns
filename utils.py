@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.0
-# Updated: 2025-11-24 16:00:00
+# Version: 1.1.8
+# Updated: 2025-11-24 14:35:00
 # -----------------------------------------------------------------------------
 
 import logging
@@ -163,7 +163,7 @@ def is_ip_in_network(ip_str, network_str):
 
 class MacMapper:
     def __init__(self, refresh_interval=300):
-        self.cache = {} 
+        self.cache = {}  # Stores {ip: (mac, timestamp)}
         self.refresh_interval = refresh_interval
         self.ip_cmd_available = shutil.which("ip") is not None
         
@@ -187,14 +187,19 @@ class MacMapper:
 
     def get_mac(self, ip_str):
         now = time.time()
+        
+        # Check cache first
         if ip_str in self.cache:
             mac, ts = self.cache[ip_str]
             if now - ts < self.refresh_interval:
+                # Return cached MAC (could be None for negative cache)
                 return mac
 
+        # If not in cache or expired, fetch fresh
         mac = self._fetch_mac(ip_str)
-        if mac:
-            self.cache[ip_str] = (mac, now)
+        
+        # Cache result (even if None/negative)
+        self.cache[ip_str] = (mac, now)
         return mac
 
     def _fetch_mac(self, ip):
@@ -205,7 +210,6 @@ class MacMapper:
             output = result.stdout.strip()
             parts = output.split()
             
-            # Log output for debugging
             logger.debug(f"MAC LOOKUP CMD: {' '.join(cmd)} -> OUTPUT: {output}")
             
             if "lladdr" in parts:
@@ -216,5 +220,7 @@ class MacMapper:
                     return mac
         except Exception as e:
             logger.warning(f"MAC LOOKUP FAILED for {ip}: {e}")
+        
+        # Return None if not found (will be cached as negative result)
         return None
 
