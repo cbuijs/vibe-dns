@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 2.8.0
-# Updated: 2025-11-24 16:45:00
+# Version: 3.3.0
+# Updated: 2025-11-24 17:45:00
 # -----------------------------------------------------------------------------
 
 import asyncio
@@ -11,6 +11,8 @@ import random
 import ipaddress
 import ssl
 import logging
+import struct
+import binascii
 from datetime import datetime
 from urllib.parse import urlparse
 from dnslib import DNSRecord, QTYPE, RCODE, RR, A, AAAA, DNSHeader
@@ -154,7 +156,9 @@ class DNSCache:
         qtype = record.q.qtype
         if forced_ttl is not None: min_ttl = forced_ttl
         else:
-            ttls = [rr.ttl for rr in record.rr] + [rr.ttl for rr in record.ar] + [rr.ttl for rr in record.auth]
+            ttls = [rr.ttl for rr in record.rr]
+            if not ttls:
+                ttls = [rr.ttl for rr in record.ar] + [rr.ttl for rr in record.auth]
             min_ttl = min(ttls) if ttls else self.negative_ttl
         
         expire_time = time.time() + min_ttl
@@ -290,7 +294,7 @@ class UpstreamManager:
             raise Exception(f"DoH status {resp.status}")
 
 # -----------------------------------------------------------------------------
-# DNS Handler
+# Request Handler
 # -----------------------------------------------------------------------------
 
 class DNSHandler:
@@ -303,23 +307,44 @@ class DNSHandler:
         self.upstream = upstream
         self.cache = cache
         self.schedules = config.get('schedules', {})
+        
         self.block_rcode = getattr(RCODE, config['response'].get('block_rcode', 'REFUSED'))
         self.block_ip_opt = config['response'].get('block_ip', None)
         self.block_ttl = config['response'].get('block_ttl', 60)
+        
         self.rate_limiter = RateLimiter(config.get('rate_limit', {}))
         self.deduplicator = RequestDeduplicator(config.get('deduplication', {}).get('enabled', True))
         self.DEFAULT_POLICY_SCOPE = "DEFAULT_CACHE"
+        
         self.prefetch_margin = config['cache'].get('prefetch_margin', 0)
         self.prefetch_min_hits = config['cache'].get('prefetch_min_hits', 3)
         self.round_robin = config['response'].get('round_robin_enabled', False)
-        # New Global Switch
         self.categorization_enabled = config.get('categorization_enabled', False)
+        self.use_ecs = config['server'].get('use_ecs', False)
+        self.use_edns_mac = config['server'].get('use_edns_mac', False)
 
     def identify_client(self, addr, meta=None):
         ip = addr[0]
-        mac = self.mac_mapper.get_mac(ip)
-        meta = meta or {}
-        sni, path = meta.get('sni', '').lower(), meta.get('path', '').lower()
+        # ECS & MAC Override Logic
+        mac = None
+        
+        if meta:
+            # 1. ECS IP Override
+            if 'ecs_ip' in meta and meta['ecs_ip']:
+                ip = meta['ecs_ip']
+                # Skip standard MAC lookup if ECS provided IP
+            
+            # 2. MAC Override (EDNS option 65001)
+            if 'mac_override' in meta and meta['mac_override']:
+                mac = meta['mac_override']
+            
+        # 3. Standard MAC Lookup (Only if not overridden)
+        if not mac and not (meta and meta.get('ecs_ip')):
+            mac = self.mac_mapper.get_mac(ip)
+
+        sni = meta.get('sni', '').lower() if meta else ''
+        path = meta.get('path', '').lower() if meta else ''
+        
         for gname, identifiers in self.groups.items():
             for ident in identifiers:
                 ident = ident.lower()
@@ -479,6 +504,57 @@ class DNSHandler:
             qtype = request.q.qtype
             qid = request.header.id
             client_ip = client_addr[0]
+
+            # --- Parse EDNS Options (ECS and MAC) ---
+            if request.ar:
+                for rr in request.ar:
+                    if rr.rtype == QTYPE.OPT:
+                         try:
+                             options = []
+                             if hasattr(rr.rdata, 'options'):
+                                 options = rr.rdata.options
+                             elif isinstance(rr.rdata, list):
+                                 options = rr.rdata
+
+                             for opt in options:
+                                 # Option 8: ECS (Client Subnet)
+                                 if self.use_ecs and opt.code == 8:
+                                     family, src_mask, scope_mask = struct.unpack("!HBB", opt.data[:4])
+                                     addr_data = opt.data[4:]
+                                     
+                                     if family == 1: # IPv4
+                                         addr_bytes = addr_data + b'\x00' * (4 - len(addr_data))
+                                         ecs_ip_obj = ipaddress.IPv4Address(addr_bytes)
+                                         client_ip = str(ecs_ip_obj)
+                                     elif family == 2: # IPv6
+                                         addr_bytes = addr_data + b'\x00' * (16 - len(addr_data))
+                                         ecs_ip_obj = ipaddress.IPv6Address(addr_bytes)
+                                         client_ip = str(ecs_ip_obj)
+                                     
+                                     if logger.isEnabledFor(logging.DEBUG):
+                                         logger.debug(f"[ID:{qid}] ECS DETECTED: Override Client IP to {client_ip}")
+                                     
+                                     if meta is None: meta = {}
+                                     meta['ecs_ip'] = client_ip
+
+                                 # Option 65001 (0xFDE9): Custom MAC Address
+                                 # Used by dnsmasq (add-mac) and others
+                                 if self.use_edns_mac and opt.code == 65001:
+                                     # Payload is raw 6-byte MAC
+                                     if len(opt.data) >= 6:
+                                         mac_bytes = opt.data[:6]
+                                         mac_str = binascii.hexlify(mac_bytes).decode('utf-8')
+                                         # Format as 00:11:22:33:44:55
+                                         mac_fmt = ':'.join(mac_str[i:i+2] for i in range(0, 12, 2))
+                                         
+                                         if logger.isEnabledFor(logging.DEBUG):
+                                             logger.debug(f"[ID:{qid}] EDNS MAC DETECTED: {mac_fmt}")
+                                         
+                                         if meta is None: meta = {}
+                                         meta['mac_override'] = mac_fmt
+
+                         except Exception as e:
+                             logger.debug(f"[ID:{qid}] Failed to parse EDNS Options: {e}")
             
             # 1. Identify Client
             group = self.identify_client(client_addr, meta)
@@ -513,7 +589,7 @@ class DNSHandler:
 
             # 4. Schedule Blocking
             if policy_name == "BLOCK":
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH SCHEDULE BLOCK (QUERY): {qname}")
+                logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH SCHEDULE BLOCK (QUERY): {qname} denied by '{group}' schedule.")
                 block_resp = self.create_block_response(request, qname, qtype)
                 self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
                 return block_resp.pack()
@@ -521,7 +597,6 @@ class DNSHandler:
             
             logger.info(f"[ID:{qid}] [IP:{client_ip}] QUERY: {client_ip} -> {qname} [{QTYPE[qtype]}] Policy: {policy_name}")
             
-            # **NEW FEATURE: Always Log Categorization if Enabled**
             if self.categorization_enabled and engine and engine.categorizer:
                  cat_results = engine.categorizer.categorize(qname)
                  if cat_results:
@@ -532,7 +607,7 @@ class DNSHandler:
             if engine:
                 blocked_type, type_reason, type_list = engine.check_type(qtype)
                 if blocked_type:
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK TYPE: {qname} Reason: {type_reason} ({type_list})")
+                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK TYPE (QUERY TYPE): {qname} Reason: {type_reason} ({type_list})")
                     reply = request.reply()
                     reply.header.rcode = self.block_rcode
                     self.cache.put(reply, scope=policy_name, forced_ttl=60)
@@ -540,10 +615,12 @@ class DNSHandler:
 
                 action, rule, list_name = engine.is_blocked(qname)
                 if action == "BLOCK":
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN: {qname} Rule: '{rule}' ({list_name})")
+                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN (QUERY): {qname} Rule: '{rule}' ({list_name})")
                     block_resp = self.create_block_response(request, qname, qtype)
                     self.cache.put(block_resp, scope=policy_name, forced_ttl=300)
                     return block_resp.pack()
+                elif action == "ALLOW":
+                    logger.info(f"[ID:{qid}] [IP:{client_ip}] ALLOW DOMAIN (QUERY): {qname} Rule: '{rule}' ({list_name})")
 
             # 6. Upstream
             async def resolve_worker():
@@ -570,7 +647,6 @@ class DNSHandler:
         response = DNSRecord.parse(upstream_data)
         logger.info(f"[ID:{qid}] [IP:{client_ip}] UPSTREAM RESPONSE: {qname} RCODE: {RCODE[response.header.rcode]}")
         
-        # Filtering First
         if engine:
             filtered_rrs = []
             for rr in response.rr:
@@ -582,25 +658,23 @@ class DNSHandler:
                     is_bad, bad_rule, bad_list = engine.check_answer(str(rr.rdata), None)
                 
                 if is_bad: 
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] RESPONSE FILTER: Removed {rr.rdata}. Rule: '{bad_rule}' ({bad_list})")
+                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN (ANSWER): Filtered {rr.rdata}. Rule: '{bad_rule}' ({bad_list})")
                     if rr.rtype not in [QTYPE.A, QTYPE.AAAA]:
-                        logger.info(f"[ID:{qid}] [IP:{client_ip}] STRICT BLOCK: Blocked domain in answer. Blocking full response.")
+                        logger.info(f"[ID:{qid}] [IP:{client_ip}] STRICT BLOCK (ANSWER): Blocked domain in answer. Blocking full response.")
                         block_resp = self.create_block_response(request, qname, qtype)
                         self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
                         return block_resp
                 else: filtered_rrs.append(rr)
             response.rr = filtered_rrs
             if not response.rr and request.q.qtype in [QTYPE.A, QTYPE.AAAA]:
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] RESPONSE FILTER: All IPs removed. Blocking.")
+                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN (ANSWER): All IPs removed. Blocking.")
                     block_resp = self.create_block_response(request, qname, qtype)
                     self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
                     return block_resp
 
-        # Modifications Second
         self.collapse_cnames(response, qid=qid, client_ip=client_ip)
         self.minimize_response(response, qid=qid, client_ip=client_ip)
         self.modify_ttls(response, qid=qid, client_ip=client_ip)
-        
         self.cache.put(response, scope=policy_name)
         return response
 
