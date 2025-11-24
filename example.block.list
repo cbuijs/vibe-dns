@@ -14,6 +14,7 @@ domain.com
 
 
 
+
 ##### BLOCK ANSWERS #####
 #
 # IP-Addresses are filtered when matching a IP or CIDR rule for A and AAAA record types.
