@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 3.3.0
-# Updated: 2025-11-24 17:45:00
+# Version: 1.0.1
+# Updated: 2025-11-25 08:00:00
 # -----------------------------------------------------------------------------
 
 import asyncio
@@ -294,7 +294,7 @@ class UpstreamManager:
             raise Exception(f"DoH status {resp.status}")
 
 # -----------------------------------------------------------------------------
-# Request Handler
+# DNS Handler
 # -----------------------------------------------------------------------------
 
 class DNSHandler:
@@ -355,6 +355,7 @@ class DNSHandler:
                     logger.info(f"MATCH CLIENT: IP {ip} -> Group '{gname}' (CIDR {ident})")
                     return gname
                 if mac and ident == mac.lower():
+                    # UPDATED LOG: Include IP alongside MAC
                     logger.info(f"MATCH CLIENT: MAC {mac} (IP: {ip}) -> Group '{gname}'")
                     return gname
                 if ident.startswith('sni:') and sni and sni == ident[4:]:
@@ -366,65 +367,109 @@ class DNSHandler:
         return None
 
     def is_schedule_active(self, schedule_name):
-        if not schedule_name or schedule_name not in self.schedules: return False
+        """Checks if the current time matches any slot in the schedule."""
+        if not schedule_name or schedule_name not in self.schedules:
+            return False
+            
         schedule = self.schedules[schedule_name]
         now = datetime.now()
-        current_day = now.strftime("%a")
+        current_day = now.strftime("%a") # Mon, Tue...
         current_hm = now.strftime("%H:%M")
-        if "days" in schedule and current_day not in schedule["days"]: return False
+        
+        if "days" in schedule and current_day not in schedule["days"]:
+            return False
+            
         slots = schedule.get("slots", [])
-        if "start" in schedule and "end" in schedule: slots.append({"start": schedule["start"], "end": schedule["end"]})
+        
+        # Backward compatibility: if single start/end exists instead of slots
+        if "start" in schedule and "end" in schedule:
+            slots.append({"start": schedule["start"], "end": schedule["end"]})
+            
         for slot in slots:
-            start, end = slot.get("start"), slot.get("end")
-            if not start or not end: continue
+            start = slot.get("start")
+            end = slot.get("end")
+            
+            if not start or not end:
+                continue
+                
             if start <= end:
-                if start <= current_hm < end: return True
+                # Normal slot (e.g., 09:00 to 17:00)
+                if start <= current_hm < end:
+                    return True
             else:
-                if current_hm >= start or current_hm < end: return True
+                # Overnight slot (e.g., 22:00 to 06:00)
+                # Active if time is AFTER 22:00 OR BEFORE 06:00
+                if current_hm >= start or current_hm < end:
+                    return True
+                    
         return False
 
     def get_active_policy(self, group):
-        if not group or group not in self.policy_map: return self.DEFAULT_POLICY_SCOPE
+        """
+        Determines the active policy for a group based on assignment and schedules.
+        """
+        if not group or group not in self.policy_map:
+            return self.DEFAULT_POLICY_SCOPE
+            
         assignment = self.policy_map[group]
         default_policy = assignment.get('policy', self.DEFAULT_POLICY_SCOPE)
+        
         schedule_name = assignment.get('schedule')
         if self.is_schedule_active(schedule_name):
             sched_policy = assignment.get('schedule_policy')
             if sched_policy:
                 logger.info(f"MATCH SCHEDULE: '{schedule_name}' is ACTIVE. Override Policy: {default_policy} -> {sched_policy}")
                 return sched_policy
+        
         return default_policy
 
     def create_block_response(self, request, qname, qtype):
         reply = request.reply()
         inject_ip = None
+        
         if self.block_ip_opt:
             if self.block_ip_opt == "NULL":
+                # Auto determine based on query type
                 if qtype == QTYPE.A: inject_ip = "0.0.0.0"
                 elif qtype == QTYPE.AAAA: inject_ip = "::"
             else:
+                # Specific IP provided in config
+                # We must ensure we don't inject IPv4 into AAAA or vice versa if it causes errors
                 try:
+                    # Validation check
                     ip_obj = ipaddress.ip_address(self.block_ip_opt)
-                    if qtype == QTYPE.A and ip_obj.version == 4: inject_ip = self.block_ip_opt
-                    elif qtype == QTYPE.AAAA and ip_obj.version == 6: inject_ip = self.block_ip_opt
-                except ValueError: pass
+                    if qtype == QTYPE.A and ip_obj.version == 4:
+                        inject_ip = self.block_ip_opt
+                    elif qtype == QTYPE.AAAA and ip_obj.version == 6:
+                        inject_ip = self.block_ip_opt
+                except ValueError:
+                    pass # Invalid IP in config
+
         if inject_ip:
             try:
-                if qtype == QTYPE.A: reply.add_answer(RR(qname, QTYPE.A, rdata=A(inject_ip), ttl=self.block_ttl))
-                elif qtype == QTYPE.AAAA: reply.add_answer(RR(qname, QTYPE.AAAA, rdata=AAAA(inject_ip), ttl=self.block_ttl))
-                reply.header.rcode = RCODE.NOERROR
+                if qtype == QTYPE.A: 
+                    reply.add_answer(RR(qname, QTYPE.A, rdata=A(inject_ip), ttl=self.block_ttl))
+                    reply.header.rcode = RCODE.NOERROR
+                elif qtype == QTYPE.AAAA: 
+                    reply.add_answer(RR(qname, QTYPE.AAAA, rdata=AAAA(inject_ip), ttl=self.block_ttl))
+                    reply.header.rcode = RCODE.NOERROR
             except Exception as e:
                 logger.error(f"Failed to inject block IP {inject_ip}: {e}")
                 reply.header.rcode = self.block_rcode
-        else: reply.header.rcode = self.block_rcode
+        else:
+            # Default to RCODE if no injection possible
+            reply.header.rcode = self.block_rcode
+            
         return reply
 
     def collapse_cnames(self, response, qid=0, client_ip="Unknown"):
         if not self.config['response'].get('cname_collapse', True): return
         max_iterations = 10
         qname = response.q.qname
+        
         cnames_removed = 0
         records_hoisted = 0
+        
         for _ in range(max_iterations):
             qname_str = str(qname).lower()
             cname_rr = None
@@ -432,34 +477,50 @@ class DNSHandler:
                 if rr.rtype == QTYPE.CNAME and str(rr.rname).lower() == qname_str:
                     cname_rr = rr
                     break
+            
             if not cname_rr: break
             target_str = str(cname_rr.rdata).lower()
             target_rrs = [rr for rr in response.rr if str(rr.rname).lower() == target_str and rr is not cname_rr]
+            
             if not target_rrs: break
+            
             cnames_removed += 1
             for rr in target_rrs: 
                 records_hoisted += 1
                 rr.rname = cname_rr.rname
-                if cname_rr.ttl < rr.ttl: rr.ttl = cname_rr.ttl
+                # Update the record TTL to the minimum of its original TTL and the CNAME's TTL
+                if cname_rr.ttl < rr.ttl:
+                    rr.ttl = cname_rr.ttl
+
             response.rr = [rr for rr in response.rr if rr is not cname_rr]
+        
         if cnames_removed > 0:
             logger.info(f"[ID:{qid}] [IP:{client_ip}] CNAME COLLAPSE: Flattened {cnames_removed} CNAMEs, hoisted {records_hoisted} records.")
 
     def minimize_response(self, response, qid=0, client_ip="Unknown"):
+        """Strips Authority and Additional sections if configured."""
         if self.config['response'].get('minimize_response', False):
             if response.ar or response.auth:
-                count = len(response.ar) + len(response.auth)
+                count_removed = len(response.ar) + len(response.auth)
                 response.ar = []
                 response.auth = []
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] RESPONSE MINIMIZED: Stripped {count} records.")
+                logger.info(f"[ID:{qid}] [IP:{client_ip}] RESPONSE MINIMIZED: Stripped {count_removed} records from Authority/Additional for {response.q.qname}")
 
     def modify_ttls(self, response, qid=0, client_ip="Unknown"):
+        """Enforces min/max TTLs and sync modes."""
         min_ttl = self.config['response'].get('min_ttl', 0)
         max_ttl = self.config['response'].get('max_ttl', 86400)
         sync_mode = self.config['response'].get('ttl_sync_mode', 'none')
+        
         if not response.rr: return
+
+        # 1. Collect all TTLs
         ttls = [rr.ttl for rr in response.rr]
+        if not ttls: return
+
         new_ttl = None
+        
+        # 2. Calculate Sync TTL if needed
         if sync_mode != 'none':
             if sync_mode == 'first': new_ttl = ttls[0]
             elif sync_mode == 'last': new_ttl = ttls[-1]
@@ -467,32 +528,69 @@ class DNSHandler:
             elif sync_mode == 'lowest': new_ttl = min(ttls)
             elif sync_mode == 'average': new_ttl = int(sum(ttls) / len(ttls))
             logger.info(f"[ID:{qid}] [IP:{client_ip}] TTL SYNC: Mode '{sync_mode}' set all TTLs to {new_ttl}s")
+
+        # 3. Apply Limits & Sync
         for rr in response.rr:
             if new_ttl is not None: rr.ttl = new_ttl
+            
+            # Clamp
+            original = rr.ttl
             if rr.ttl < min_ttl: 
                 rr.ttl = min_ttl
-                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Boosted to {min_ttl}s")
+                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Boosted {original}s -> {min_ttl}s")
             elif rr.ttl > max_ttl: 
                 rr.ttl = max_ttl
-                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Capped to {max_ttl}s")
+                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Capped {original}s -> {max_ttl}s")
 
     def round_robin_answers(self, response, qid=0, client_ip="Unknown"):
-        if not self.round_robin or not response.rr: return
-        a_records = [rr for rr in response.rr if rr.rtype == QTYPE.A]
-        aaaa_records = [rr for rr in response.rr if rr.rtype == QTYPE.AAAA]
-        other_records = [rr for rr in response.rr if rr.rtype not in [QTYPE.A, QTYPE.AAAA]]
-        shuffled_types = []
+        """Shuffles A and AAAA records in the answer section, keeping CNAMEs intact."""
+        if not self.round_robin:
+            return
+        
+        if not response.rr:
+            return
+            
+        # Separate records by type
+        a_records = []
+        aaaa_records = []
+        other_records = []
+        
+        for rr in response.rr:
+            if rr.rtype == QTYPE.A:
+                a_records.append(rr)
+            elif rr.rtype == QTYPE.AAAA:
+                aaaa_records.append(rr)
+            else:
+                other_records.append(rr)
+        
+        shuffled = False
         if len(a_records) > 1:
             random.shuffle(a_records)
-            shuffled_types.append("A")
+            shuffled = True
+            if logger.isEnabledFor(logging.DEBUG):
+                 new_order = [str(r.rdata) for r in a_records]
+                 logger.debug(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN (A): New Order: {new_order}")
+            
         if len(aaaa_records) > 1:
             random.shuffle(aaaa_records)
-            shuffled_types.append("AAAA")
-        if shuffled_types:
+            shuffled = True
+            if logger.isEnabledFor(logging.DEBUG):
+                 new_order = [str(r.rdata) for r in aaaa_records]
+                 logger.debug(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN (AAAA): New Order: {new_order}")
+            
+        if shuffled:
+            # Reassemble: Others first (CNAMEs), then shuffled IPs
             response.rr = other_records + a_records + aaaa_records
+            
+            # Log only the types that were actually shuffled
+            shuffled_types = []
+            if len(a_records) > 1: shuffled_types.append("A")
+            if len(aaaa_records) > 1: shuffled_types.append("AAAA")
+            
             logger.info(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN: Shuffled {', '.join(shuffled_types)} records.")
 
     def log_answer_records(self, response, qid, client_ip):
+        """Logs all answer records if DEBUG is enabled."""
         if logger.isEnabledFor(logging.DEBUG):
              for rr in response.rr:
                  logger.debug(f"[ID:{qid}] [IP:{client_ip}] ANSWER: {rr.rname} {QTYPE[rr.rtype]} TTL={rr.ttl} DATA={rr.rdata}")
@@ -505,8 +603,8 @@ class DNSHandler:
             qid = request.header.id
             client_ip = client_addr[0]
 
-            # --- Parse EDNS Options (ECS and MAC) ---
-            if request.ar:
+            # --- Extract ECS ---
+            if self.use_ecs and request.ar:
                 for rr in request.ar:
                     if rr.rtype == QTYPE.OPT:
                          try:
@@ -517,7 +615,7 @@ class DNSHandler:
                                  options = rr.rdata
 
                              for opt in options:
-                                 # Option 8: ECS (Client Subnet)
+                                 # Option 8: ECS
                                  if self.use_ecs and opt.code == 8:
                                      family, src_mask, scope_mask = struct.unpack("!HBB", opt.data[:4])
                                      addr_data = opt.data[4:]
@@ -537,14 +635,11 @@ class DNSHandler:
                                      if meta is None: meta = {}
                                      meta['ecs_ip'] = client_ip
 
-                                 # Option 65001 (0xFDE9): Custom MAC Address
-                                 # Used by dnsmasq (add-mac) and others
+                                 # Option 65001: Custom MAC
                                  if self.use_edns_mac and opt.code == 65001:
-                                     # Payload is raw 6-byte MAC
                                      if len(opt.data) >= 6:
                                          mac_bytes = opt.data[:6]
                                          mac_str = binascii.hexlify(mac_bytes).decode('utf-8')
-                                         # Format as 00:11:22:33:44:55
                                          mac_fmt = ':'.join(mac_str[i:i+2] for i in range(0, 12, 2))
                                          
                                          if logger.isEnabledFor(logging.DEBUG):
