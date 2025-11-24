@@ -261,7 +261,7 @@ groups:
   # - Exact IP: "192.168.1.50"
   # - Subnet: "192.168.2.0/24"
   # - MAC Address: "00:11:22:33:44:55" (Linux only)
-  # - DoT SNI: "sni:kids.dns.example.com"
+  # - DoT/DoH SNI: "sni:kids.dns.example.com"
   # - DoH Path: "path:/kids"
   
   kids_devices:
