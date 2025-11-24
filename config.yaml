@@ -1,36 +1,90 @@
 # -----------------------------------------------------------------------------
-# Project: Filtering DNS Server
-# Version: 1.6.0
-# Updated: 2025-11-24 17:30:00
+# FILTERING DNS SERVER - COMPLETE CONFIGURATION REFERENCE
+# -----------------------------------------------------------------------------
+# This file documents all available configuration options for the server.
+# Sections:
+#   1. Logging
+#   2. Server Networking
+#   3. Upstream Resolution
+#   4. Caching & Performance
+#   5. Rate Limiting
+#   6. Response Modification
+#   7. Client Identification & Groups
+#   8. Schedules
+#   9. Policy Assignment
+#  10. Filter Lists & Categorization
+#  11. Policies
 # -----------------------------------------------------------------------------
 
+# =============================================================================
+# 1. LOGGING
+# =============================================================================
 logging:
+  # Sets the verbosity of the logs.
+  # Options: 
+  #   - "DEBUG": Verbose output, includes packet details, regex matching steps, and internal logic.
+  #   - "INFO": Standard operational logs (queries, blocks, startup/shutdown).
+  #   - "WARNING": Only issues that might affect service (e.g., list download failure).
+  #   - "ERROR": Critical failures.
   level: "INFO"
+  
+  # Enable logging to standard output (console/terminal).
+  # Useful when running in foreground or container.
   enable_console: true
+  
+  # Enable logging to a specific file.
   enable_file: true
+  
+  # Path to the log file.
   file_path: "./dns_server.log"
+  
+  # Enable logging to the system logger (Syslog).
   enable_syslog: true
+  
+  # Syslog address.
+  # - Local Socket (Linux/Mac): "/dev/log"
+  # - Remote Server: "192.168.1.50:514"
   syslog_address: "/dev/log"
+  
+  # Protocol for REMOTE syslog only. Ignored for local sockets.
+  # Options: "UDP", "TCP"
   syslog_protocol: "UDP"
 
-# -----------------------------------------------------------------------------
-# 2. General Server Networking
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 2. SERVER NETWORKING
+# =============================================================================
 server:
+  # List of IP addresses the server should bind listeners to.
+  # - "0.0.0.0" binds to all available IPv4 interfaces.
+  # - "::" binds to all available IPv6 interfaces.
   bind_ip: 
     - "0.0.0.0"
     - "::"
+
+  # List of network interface names (e.g., "eth0", "wlan0"). 
+  # The server will automatically resolve these to their current IPv4 and IPv6 addresses at startup.
+  # Useful for dynamic environments (DHCP) where the IP is not known in advance.
   bind_interfaces: []
+  
+  # Ports for standard DNS traffic.
+  # Standard is 53. Requires root privileges.
   port_udp: 53
   port_tcp: 53
+  
+  # Security setting for DoH (HTTPS) and DoT (TLS).
+  # Controls behavior when a client requests a hostname (SNI or Path) not explicitly allowed below.
+  # - "drop": Immediately close the connection (secure).
+  # - "log_pass": Allow the connection but log a warning (for debugging).
   listener_validation: "drop"
 
-  # Enable usage of EDNS Client Subnet (ECS) for client identification.
+  # Enable identifying clients via EDNS Client Subnet (ECS).
+  # If true, and a query contains an ECS option (Code 8), the IP in the ECS header
+  # is used as the client IP for policy matching, overriding the network source IP.
   use_ecs: false
-  
-  # Enable usage of EDNS0 Option 65001 (MAC Address forwarding).
-  # Used by some forwarders (like dnsmasq) to pass client MAC to upstream.
-  # Default: false
+
+  # Enable identifying clients via EDNS0 MAC forwarding (Option 65001).
+  # Used by forwarders like dnsmasq (add-mac) to pass client MAC addresses.
+  # If detected, this overrides standard MAC lookups.
   use_edns_mac: true
 
   # --- DoT (DNS over TLS) ---
@@ -38,6 +92,8 @@ server:
   port_dot: 853
   tls_cert_file: "./cert.pem"
   tls_key_file: "./key.pem"
+  
+  # Whitelist of Server Names (SNI) allowed for DoT connections.
   dot_server_names: 
     - "dns.example.com"
     - "secure.home.arpa"
@@ -45,132 +101,238 @@ server:
   # --- DoH (DNS over HTTPS) ---
   doh_enabled: true
   port_doh: 443
+  
+  # Whitelist of Server Names (SNI) allowed for DoH connections.
   doh_server_names:
     - "dns.example.com"
+  
+  # Whitelist of URL paths for DoH queries (RFC 8484 standard is /dns-query).
+  # You can use custom paths for client identification (see Groups section).
   doh_paths: 
     - "/dns-query"
     - "/family"
     - "/guest"
 
-# -----------------------------------------------------------------------------
-# 3. Upstream Servers
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 3. UPSTREAM RESOLUTION
+# =============================================================================
 upstream:
+  # List of upstream DNS servers to forward non-blocked queries to.
+  # Syntax: protocol://hostname:port#forced_ip
+  # Protocols: udp, tcp, tls (DoT), https (DoH).
+  # The #forced_ip suffix is optional but recommended to avoid bootstrapping delays.
   servers:
+    # Standard UDP Cloudflare
     - "udp://1.1.1.1:53"
+    # Quad9 via DoT (Private & Secure)
     - "tls://dns.quad9.net:853#9.9.9.9"
+    # Cloudflare via DoH
     - "https://cloudflare-dns.com/dns-query#1.0.0.1"
+  
+  # Bootstrap DNS servers. Used to resolve the hostnames of your upstreams 
+  # if #forced_ip is not provided.
   bootstrap:
     - "8.8.8.8"
     - "2606:4700:4700::1111"
+
+  # How often (seconds) to ping upstreams to measure latency.
   monitor_interval: 60
+  
+  # If true, triggers a background latency check immediately when a query arrives
+  # if the cached latency data is stale.
   monitor_on_query: false
+  
+  # Domain used for latency health checks. Should be a reliable, fast domain.
   test_domain: "www.google.com"
 
-# -----------------------------------------------------------------------------
-# 4. Caching & Deduplication
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 4. CACHING & PERFORMANCE
+# =============================================================================
 cache:
+  # Maximum number of records to store in memory.
   size: 10000
+  
+  # Interval (seconds) for the Garbage Collector to remove expired entries.
   gc_interval: 300
+  
+  # Optimistic Prefetching:
+  # If a cached record is requested and has less than X seconds of TTL remaining,
+  # serve the cached item immediately but trigger a background refresh.
+  # Set to 0 to disable.
   prefetch_margin: 10
-  negative_ttl: 60
+  
+  # Minimum number of cache hits a record needs before it qualifies for prefetching.
+  # Prevents wasting bandwidth on "one-off" domains.
   prefetch_min_hits: 3
+  
+  # Default TTL (seconds) for negative answers (NXDOMAIN/NODATA) if the upstream
+  # does not provide one.
+  negative_ttl: 60
 
 deduplication:
+  # Request Coalescing. If 50 clients ask for the same domain at once,
+  # send only 1 query upstream and answer all 50 when it returns.
   enabled: true
 
-# -----------------------------------------------------------------------------
-# 5. Rate Limiting
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 5. RATE LIMITING
+# =============================================================================
+# Protections against Denial of Service (DoS) and abusive clients.
 rate_limit:
   enabled: true
+  
+  # Time window (seconds) for counting requests.
   window_seconds: 60
+  
+  # Subnet masks for grouping clients.
+  # IPv4 /24 = Group 192.168.1.x together.
+  # IPv4 /32 = Rate limit per individual IP.
   ipv4_mask: 24
   ipv6_mask: 64
+  
+  # Max UDP queries allowed in the window before forcing TCP (TC Bit).
+  # TCP is harder to spoof, mitigating reflection attacks.
   udp_threshold: 100         
+  
+  # Absolute max queries (UDP+TCP) allowed before silently dropping packets.
   total_threshold: 200       
 
-# -----------------------------------------------------------------------------
-# 6. Response Modification
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 6. RESPONSE MODIFICATION
+# =============================================================================
 response:
+  # Round Robin Load Balancing.
+  # If enabled, shuffles the order of A and AAAA records in the response.
   round_robin_enabled: false
+  
+  # CNAME Flattening.
+  # If enabled, recursively resolves CNAME chains and returns the final IP 
+  # in the first answer, improving client compatibility and speed.
   cname_collapse: true
+  
+  # Response Minimization.
+  # If enabled, strips Authority and Additional sections to reduce packet size.
   minimize_response: false
+  
+  # Enforced TTL Bounds (Seconds).
+  # Prevents records from expiring too fast (performance) or staying too long (stale data).
   min_ttl: 60
   max_ttl: 86400
+  
+  # TTL Sync Mode.
+  # Forces all records in a response to share the same TTL.
+  # Options: "none", "lowest", "highest", "average".
   ttl_sync_mode: "none"
+  
+  # --- Blocking Behavior ---
+  
+  # DNS Response Code sent when a query is blocked.
+  # Options: "REFUSED", "NXDOMAIN", "NOERROR", "SERVFAIL".
   block_rcode: "REFUSED"
+  
+  # TTL (seconds) assigned to synthetic blocked responses.
   block_ttl: 60
+  
+  # IP Injection for blocks (Sinkholing).
+  # - "NULL": Returns 0.0.0.0 (IPv4) or :: (IPv6).
+  # - "10.0.0.1": Returns a custom IP (e.g., a block page server).
+  # - (Empty/Missing): Returns only the block_rcode.
   block_ip: "NULL"
+  
+  # Global Answer Matching.
+  # If true, applies ALL blocklists to CNAME targets and IPs found in the answer section.
+  # If false, only checks Query Name and specific Answer Rules (starting with @).
   match_answers_globally: false
 
-# -----------------------------------------------------------------------------
-# 7. Client Groups
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 7. CLIENT GROUPS
+# =============================================================================
+# Interval to refresh system ARP/Neighbor tables for MAC resolution.
+mac_cache_refresh_interval: 300
+
 groups:
+  # Groups allow applying specific policies to specific devices.
+  # Matchers:
+  # - Exact IP: "192.168.1.50"
+  # - Subnet: "192.168.2.0/24"
+  # - MAC Address: "00:11:22:33:44:55" (Linux only)
+  # - DoT SNI: "sni:kids.dns.example.com"
+  # - DoH Path: "path:/kids"
+  
   kids_devices:
-    - "192.168.1.50"
+    - "192.168.1.50"         # Gaming PC
     - "sni:kids.dns.example.com"
     - "path:/family"
+
   guest_network:
-    - "192.168.2.0/24"
+    - "192.168.2.0/24"       # Guest VLAN
     - "path:/guest"
 
-# -----------------------------------------------------------------------------
-# 8. Schedules
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 8. SCHEDULES
+# =============================================================================
 schedules:
   bedtime:
     days: ["Mon", "Tue", "Wed", "Thu", "Sun"]
     slots:
-      - { start: "21:00", end: "07:00" }
+      - { start: "21:00", end: "07:00" } # Overnight schedule supported
+  
   school_hours:
     days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
     slots:
-      - { start: "08:30", end: "12:00" }
-      - { start: "13:00", end: "15:30" }
+      - { start: "08:30", end: "15:30" }
 
-# -----------------------------------------------------------------------------
-# 9. Assignments
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 9. ASSIGNMENTS
+# =============================================================================
+# Maps Groups -> Policies -> Schedules.
 assignments:
   kids_devices:
-    policy: "StrictPolicy"
-    schedule: "bedtime"
-    schedule_policy: "BLOCK"
+    policy: "StrictPolicy"       # Default policy
+    schedule: "bedtime"          # Active schedule
+    schedule_policy: "BLOCK"     # Policy to apply when schedule is active
+                                 # "BLOCK" is a built-in hard block.
+  
   guest_network:
     policy: "GuestPolicy"
 
-mac_cache_refresh_interval: 300
+# =============================================================================
+# 10. FILTER LISTS & CATEGORIZATION
+# =============================================================================
+# How often (seconds) to re-download remote blocklists.
 list_refresh_interval: 86400
 
-# -----------------------------------------------------------------------------
-# 10. Filter Lists
-# -----------------------------------------------------------------------------
+# Enable Domain Categorization (Gambling, Ads, etc.) based on keywords/regex.
 categorization_enabled: false
 categories_file: "categories.json"
 
 lists:
+  # Remote list with specific parsing behavior
   ads_basic:
     - source: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
-      hosts_domain_type: "inclusive"
+      hosts_domain_type: "inclusive" # "exact", "inclusive" (.domain), "exclusive" (*.domain)
+  
+  # Local text files
   custom_block:
     - "./my_blocklist.txt"
   custom_allow:
     - "./my_allowlist.txt"
 
-# -----------------------------------------------------------------------------
-# 11. Policies
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 11. POLICIES
+# =============================================================================
 policies:
   StrictPolicy:
+    # Lists to Allow (Checked first)
     allow:
       - "custom_allow"
+    
+    # Lists to Block
     block:
       - "ads_basic"
       - "custom_block"
+    
+    # Whitelist of allowed Record Types. All others are blocked.
     allowed_types: 
       - "A"
       - "AAAA"
@@ -178,6 +340,8 @@ policies:
       - "HTTPS"
       - "SRV"
     
+    # Domain Categorization thresholds.
+    # If a domain matches 'gambling' with >85% confidence, block it.
     category_rules:
       gambling:
         min_confidence: 85
@@ -189,6 +353,7 @@ policies:
   GuestPolicy:
     block:
       - "ads_basic"
+    # Blacklist of Record Types.
     blocked_types:
       - "TXT"
       - "ANY"
