@@ -86,6 +86,8 @@ lists:
   # Standard Ad/Malware lists
   ads_basic:
     - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    hosts_domain_type: "inclusive" # Options: "exact", "inclusive", "exclusive"
+
   # Custom local allowlist for false positives
   whitelist:
     - "./lists/whitelist.txt"
@@ -130,4 +132,5 @@ policies:
     block: ["ads_basic"]
     # Block everything except standard A/AAAA queries
     allowed_types: ["A", "AAAA", "SRV"]
+
 
