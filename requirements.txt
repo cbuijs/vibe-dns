@@ -4,4 +4,3 @@ aiohttp==3.9.3
 regex==2023.12.25
 cryptography==42.0.5
 psutil==5.9.8
-
