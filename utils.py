@@ -221,4 +221,3 @@ class MacMapper:
             logger.warning(f"MAC LOOKUP FAILED for {ip}: {e}")
         return None
 
-
