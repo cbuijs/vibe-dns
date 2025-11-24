@@ -31,6 +31,9 @@ logging:
   # Enable logging to standard output (console/terminal).
   # Useful when running in foreground or container.
   enable_console: true
+
+  # Add timestamp to logging on standard output.
+  console_timestamp: true
   
   # Enable logging to a specific file.
   enable_file: true
