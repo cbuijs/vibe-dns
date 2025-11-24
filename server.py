@@ -30,11 +30,14 @@ class UDPServer:
     def connection_made(self, transport): self.transport = transport
 
     def datagram_received(self, data, addr):
+        # Fire and forget processing for high throughput
         asyncio.create_task(self.handle(data, addr))
 
     async def handle(self, data, addr):
         meta = {'proto': 'udp'}
+        # Process the query
         resp = await self.handler.process_query(data, addr, meta)
+        # Send response if valid
         if resp: self.transport.sendto(resp, addr)
 
 # TCP Listener used for both standard DNS-over-TCP and DoT.
@@ -64,10 +67,13 @@ class TCPServer:
 
         meta = {'proto': self.proto, 'sni': sni}
         try:
+            # TCP DNS messages are prefixed with a 2-byte length field
             len_bytes = await reader.readexactly(2)
             length = int.from_bytes(len_bytes, 'big')
             data = await reader.readexactly(length)
+            
             resp = await self.handler.process_query(data, addr, meta)
+            
             if resp:
                 writer.write(len(resp).to_bytes(2, 'big') + resp)
                 await writer.drain()
@@ -77,7 +83,7 @@ class TCPServer:
         finally: writer.close()
 
 # -----------------------------------------------------------------------------
-# DoH (DNS over HTTPS) Handler
+# HTTP Handler (DoH)
 # -----------------------------------------------------------------------------
 async def doh_handler(request):
     dns_handler = request.app['dns_handler']
@@ -98,20 +104,26 @@ async def doh_handler(request):
         if request.content_type != 'application/dns-message': return web.Response(status=415)
         data = await request.read()
     elif request.method == 'GET':
+        # Some clients use GET with base64 params. Not implemented here for simplicity.
         return web.Response(status=405)
     
     addr = request.transport.get_extra_info('peername')
     if addr is None: addr = ('0.0.0.0', 0)
     
     meta = {'proto': 'doh', 'sni': sni, 'path': request.path}
+    
     resp_data = await dns_handler.process_query(data, addr, meta)
+    
     return web.Response(body=resp_data, status=200, content_type='application/dns-message')
 
 # -----------------------------------------------------------------------------
-# Application Entry Point
+# Main Application Entry
 # -----------------------------------------------------------------------------
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Filtering DNS Server")
+    parser = argparse.ArgumentParser(
+        description="Filtering DNS Server (UDP/TCP/DoT/DoH)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("-c", "--config", default="config.yaml", help="Path to YAML configuration file.")
     return parser.parse_args()
 
@@ -132,14 +144,13 @@ async def main():
     setup_logger(config)
     logger.info(f"Starting DNS Filter Server using config: {config_path}")
 
-    # Determine IPs to listen on
     listen_ips = get_server_ips(config)
     if not listen_ips:
         logger.error("No IPs to bind to! Check config.")
         return
     logger.info(f"Configured to bind on: {listen_ips}")
 
-    # Initialize core components
+    # Initialize Managers
     mac_mapper = MacMapper(config.get('mac_cache_refresh_interval', 300))
     list_manager = ListManager(cache_dir="./list_cache", refresh_interval=config.get('list_refresh_interval', 86400))
     await list_manager.update_lists(config['lists'])
@@ -155,8 +166,7 @@ async def main():
         config['cache']['size'],
         config['cache'].get('prefetch_margin', 0),
         config['cache'].get('negative_ttl', 60),
-        config['cache'].get('gc_interval', 300),
-        config['cache'].get('prefetch_min_hits', 3)
+        config['cache'].get('gc_interval', 300)
     )
 
     handler = DNSHandler(
@@ -166,7 +176,7 @@ async def main():
 
     loop = asyncio.get_running_loop()
     
-    # Bind all protocols for all IPs
+    # Bind to all resolved IPs
     for ip in listen_ips:
         # UDP
         try:
@@ -218,10 +228,12 @@ async def main():
                     logger.info(f"Running DoH Listener on {ip}:{port_doh}")
                 except Exception as e: logger.error(f"Failed to bind DoH on {ip}: {e}")
 
+    # Alert if encrypted DNS was requested but keys were missing
     if (config['server'].get('dot_enabled') or config['server'].get('doh_enabled')):
         if not (os.path.exists(config['server']['tls_cert_file']) and os.path.exists(config['server']['tls_key_file'])):
             logger.error("TLS Cert/Key missing. DoT/DoH listeners could not be started.")
 
+    # Keep the event loop running forever
     try: await asyncio.Event().wait()
     except KeyboardInterrupt: pass
 
