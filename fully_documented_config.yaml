@@ -1,0 +1,274 @@
+# -----------------------------------------------------------------------------
+# Project: Filtering DNS Server - Reference Configuration
+# Version: 1.4.0
+# Description: Comprehensive reference of all available settings.
+# -----------------------------------------------------------------------------
+
+# =============================================================================
+# 1. LOGGING
+# =============================================================================
+logging:
+  # Controls the verbosity of logs.
+  # Options: "DEBUG" (Verbose), "INFO" (Standard), "WARNING" (Issues only), "ERROR" (Critical only).
+  # Default: "INFO"
+  level: "INFO"
+  
+  # Enable logging to standard output (console/terminal).
+  # Default: true
+  enable_console: true
+  
+  # Enable logging to a specific file.
+  # Default: true
+  enable_file: true
+  
+  # Path to the log file. Relative paths are relative to the script execution directory.
+  # Default: "./dns_server.log"
+  file_path: "./dns_server.log"
+  
+  # Enable logging to the system logger (Syslog).
+  # Default: true
+  enable_syslog: true
+  
+  # Syslog address or socket path.
+  # Local (Linux/Mac): "/dev/log" or "/var/run/syslog"
+  # Remote: "192.168.1.50:514"
+  # Default: "/dev/log"
+  syslog_address: "/dev/log"
+  
+  # Protocol for REMOTE syslog only. Ignored for local sockets.
+  # Options: "UDP", "TCP"
+  # Default: "UDP"
+  syslog_protocol: "UDP"
+
+# =============================================================================
+# 2. SERVER NETWORKING
+# =============================================================================
+server:
+  # List of IP addresses the server should bind to.
+  # "0.0.0.0" binds to all IPv4 interfaces.
+  # "::" binds to all IPv6 interfaces.
+  # Default: ["0.0.0.0"]
+  bind_ip: 
+    - "0.0.0.0"
+    - "::"
+
+  # List of network interface names to automatically resolve IPs for.
+  # Useful for dynamic IPs (DHCP). The server finds the IP of 'eth0' at startup.
+  # Default: []
+  bind_interfaces: []
+  
+  # Port for standard DNS traffic (UDP/TCP).
+  # Default: 53
+  port_udp: 53
+  port_tcp: 53
+  
+  # Action when a client requests an SNI (DoT) or Path (DoH) not in the allow-list.
+  # Options: "drop" (Disconnect), "log_pass" (Allow but log warning).
+  # Default: "drop"
+  listener_validation: "drop"
+
+  # --- DoT (DNS over TLS) ---
+  # Enable DoT listener.
+  # Default: true
+  dot_enabled: true
+  
+  # Port for DoT.
+  # Default: 853
+  port_dot: 853
+  
+  # TLS Certificate paths (PEM format).
+  tls_cert_file: "./cert.pem"
+  tls_key_file: "./key.pem"
+  
+  # Allowed Server Name Indication (SNI) hostnames for DoT clients.
+  # Default: ["dns.example.com"]
+  dot_server_names: 
+    - "dns.example.com"
+
+  # --- DoH (DNS over HTTPS) ---
+  # Enable DoH listener.
+  # Default: true
+  doh_enabled: true
+  
+  # Port for DoH.
+  # Default: 443
+  port_doh: 443
+  
+  # Allowed SNI hostnames for DoH.
+  doh_server_names:
+    - "dns.example.com"
+  
+  # Allowed URL paths for DoH queries.
+  # Default: ["/dns-query"]
+  doh_paths: 
+    - "/dns-query"
+
+# =============================================================================
+# 3. UPSTREAM RESOLUTION
+# =============================================================================
+upstream:
+  # List of upstream DNS servers.
+  # Syntax: protocol://hostname:port#forced_ip
+  # Protocols: udp, tcp, tls (DoT), https (DoH).
+  # #forced_ip is optional but recommended to avoid bootstrap lookups.
+  servers:
+    - "udp://1.1.1.1:53"
+    - "tls://dns.quad9.net:853#9.9.9.9"
+    - "https://cloudflare-dns.com/dns-query#1.0.0.1"
+  
+  # Bootstrap DNS servers used to resolve upstream hostnames if no IP is provided.
+  # Default: ["8.8.8.8"]
+  bootstrap:
+    - "8.8.8.8"
+    - "2606:4700:4700::1111"
+
+  # Interval (in seconds) to ping upstreams for latency checks.
+  # Default: 60
+  monitor_interval: 60
+  
+  # If true, re-check latency immediately when a client query arrives (if stale).
+  # Default: false
+  monitor_on_query: false
+  
+  # Domain used for latency health checks.
+  # Default: "www.google.com"
+  test_domain: "www.google.com"
+
+# =============================================================================
+# 4. CACHING & PERFORMANCE
+# =============================================================================
+cache:
+  # Maximum number of records to cache in memory.
+  # Default: 10000
+  size: 10000
+  
+  # Interval (seconds) to clean up expired entries.
+  # Default: 300
+  gc_interval: 300
+  
+  # Time (seconds) before expiry to trigger a background refresh (prefetch).
+  # 0 disables prefetching.
+  # Default: 10
+  prefetch_margin: 10
+  
+  # Minimum hits a record must have before it qualifies for prefetching.
+  # Prevents cache thrashing on one-off domains.
+  # Default: 3
+  prefetch_min_hits: 3
+  
+  # Default TTL (seconds) for negative answers (NXDOMAIN) if none provided.
+  # Default: 60
+  negative_ttl: 60
+
+deduplication:
+  # Enable request coalescing (prevent cache stampedes).
+  # Default: true
+  enabled: true
+
+# =============================================================================
+# 5. RATE LIMITING
+# =============================================================================
+rate_limit:
+  # Master switch for rate limiting.
+  # Default: true
+  enabled: true
+  
+  # Window size (seconds) for counting requests.
+  # Default: 60
+  window_seconds: 60
+  
+  # Subnet masks for grouping clients.
+  # IPv4: 32 (Per IP), 24 (Per Subnet). IPv6: 128 (Per IP), 64 (Per Subnet).
+  # Default: 24 (IPv4), 64 (IPv6)
+  ipv4_mask: 24
+  ipv6_mask: 64
+  
+  # Max UDP queries before forcing TCP (TC Bit).
+  # Default: 100
+  udp_threshold: 100         
+  
+  # Max Total queries before dropping packets.
+  # Default: 200
+  total_threshold: 200       
+
+# =============================================================================
+# 6. RESPONSE MODIFICATION
+# =============================================================================
+response:
+  # Enable Round Robin for A/AAAA records in answers.
+  # Default: false
+  round_robin_enabled: false
+  
+  # Flatten CNAME chains to return the final IP directly.
+  # Default: true
+  cname_collapse: true
+  
+  # Strip Authority and Additional sections to reduce packet size.
+  # Default: false
+  minimize_response: false
+  
+  # Enforced TTL bounds (seconds).
+  min_ttl: 60
+  max_ttl: 86400
+  
+  # Sync all record TTLs in a response to the same value.
+  # Options: "none", "lowest", "highest", "average".
+  # Default: "none"
+  ttl_sync_mode: "none"
+  
+  # Error code returned for blocked queries.
+  # Options: "REFUSED", "NXDOMAIN", "NOERROR", "SERVFAIL".
+  # Default: "REFUSED"
+  block_rcode: "REFUSED"
+  
+  # TTL (seconds) assigned to synthetic blocked responses.
+  # Default: 60
+  block_ttl: 60
+  
+  # IP to inject for blocked A/AAAA records.
+  # "NULL" = 0.0.0.0 / ::
+  # "10.0.0.1" = Custom Sinkhole IP.
+  # Default: "NULL"
+  block_ip: "NULL"
+  
+  # Apply block rules to domains found inside the Answer section (CNAMEs).
+  # Default: false
+  match_answers_globally: false
+
+# =============================================================================
+# 7. CLIENT GROUPS & LISTS
+# =============================================================================
+# Refresh interval (seconds) for system ARP/Neighbor table lookups.
+mac_cache_refresh_interval: 300
+
+# Refresh interval (seconds) for re-downloading remote blocklists.
+list_refresh_interval: 86400
+
+groups:
+  # Define groups by IP, CIDR, MAC, SNI, or Path.
+  example_group:
+    - "192.168.1.50"
+
+schedules:
+  # Define time windows.
+  example_schedule:
+    days: ["Mon", "Tue"]
+    slots:
+      - { start: "09:00", end: "17:00" }
+
+assignments:
+  # Link Groups -> Policies -> Schedules
+  example_group:
+    policy: "DefaultPolicy"
+
+lists:
+  # Define source URLs or local paths for filter lists.
+  example_list:
+    - "https://example.com/hosts.txt"
+
+policies:
+  # Define rulesets.
+  DefaultPolicy:
+    block:
+      - "example_list"
+
