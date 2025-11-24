@@ -708,4 +708,3 @@ class DNSHandler:
         self.cache.put(response, scope=policy_name)
         return response
 
-
