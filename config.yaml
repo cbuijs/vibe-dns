@@ -307,7 +307,7 @@ assignments:
 # How often (seconds) to re-download remote blocklists.
 list_refresh_interval: 86400
 
-# Enable Domain Categorization (Gambling, Ads, etc.) based on keywords/regex.
+# Enable Domain Categorization (Gambling, Ads, etc.) based on keywords/regex/tld.
 categorization_enabled: false
 categories_file: "categories.json"
 
