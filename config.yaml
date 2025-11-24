@@ -221,7 +221,12 @@ response:
   
   # TTL Sync Mode.
   # Forces all records in a response to share the same TTL.
-  # Options: "none", "lowest", "highest", "average".
+  # Options: "none", "lowest", "highest", "average", "first" and "last"
+  # none - Do nothing.
+  # lowest - Pick the lowest TTL amoung all records in the anwer.
+  # higest - Pick the highest TTL amoung all records in the anwer.
+  # first - Pick the first TTL amoung all records in the anwer.
+  # last - Pick the last TTL amoung all records in the anwer (prefered).
   ttl_sync_mode: "none"
   
   # --- Blocking Behavior ---
