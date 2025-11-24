@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.5.0
-# Updated: 2025-11-24 16:45:00
+# Version: 1.6.0
+# Updated: 2025-11-24 17:30:00
 # -----------------------------------------------------------------------------
 
 logging:
@@ -24,18 +24,33 @@ server:
   port_udp: 53
   port_tcp: 53
   listener_validation: "drop"
+
+  # Enable usage of EDNS Client Subnet (ECS) for client identification.
+  use_ecs: false
+  
+  # Enable usage of EDNS0 Option 65001 (MAC Address forwarding).
+  # Used by some forwarders (like dnsmasq) to pass client MAC to upstream.
+  # Default: false
+  use_edns_mac: true
+
+  # --- DoT (DNS over TLS) ---
   dot_enabled: true
   port_dot: 853
   tls_cert_file: "./cert.pem"
   tls_key_file: "./key.pem"
   dot_server_names: 
     - "dns.example.com"
+    - "secure.home.arpa"
+
+  # --- DoH (DNS over HTTPS) ---
   doh_enabled: true
   port_doh: 443
   doh_server_names:
     - "dns.example.com"
   doh_paths: 
     - "/dns-query"
+    - "/family"
+    - "/guest"
 
 # -----------------------------------------------------------------------------
 # 3. Upstream Servers
@@ -44,8 +59,10 @@ upstream:
   servers:
     - "udp://1.1.1.1:53"
     - "tls://dns.quad9.net:853#9.9.9.9"
+    - "https://cloudflare-dns.com/dns-query#1.0.0.1"
   bootstrap:
     - "8.8.8.8"
+    - "2606:4700:4700::1111"
   monitor_interval: 60
   monitor_on_query: false
   test_domain: "www.google.com"
@@ -95,8 +112,11 @@ response:
 groups:
   kids_devices:
     - "192.168.1.50"
+    - "sni:kids.dns.example.com"
+    - "path:/family"
   guest_network:
     - "192.168.2.0/24"
+    - "path:/guest"
 
 # -----------------------------------------------------------------------------
 # 8. Schedules
@@ -106,6 +126,11 @@ schedules:
     days: ["Mon", "Tue", "Wed", "Thu", "Sun"]
     slots:
       - { start: "21:00", end: "07:00" }
+  school_hours:
+    days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    slots:
+      - { start: "08:30", end: "12:00" }
+      - { start: "13:00", end: "15:30" }
 
 # -----------------------------------------------------------------------------
 # 9. Assignments
@@ -122,14 +147,9 @@ mac_cache_refresh_interval: 300
 list_refresh_interval: 86400
 
 # -----------------------------------------------------------------------------
-# 10. Filtering & Lists
+# 10. Filter Lists
 # -----------------------------------------------------------------------------
-# Global switch for domain categorization logging/monitoring.
-# If true, all queries are checked against categories and logged if they match,
-# regardless of whether the policy blocks them.
 categorization_enabled: false
-
-# Path to the categories JSON file
 categories_file: "categories.json"
 
 lists:
@@ -158,7 +178,6 @@ policies:
       - "HTTPS"
       - "SRV"
     
-    # Rules for blocking based on categorization confidence
     category_rules:
       gambling:
         min_confidence: 85
