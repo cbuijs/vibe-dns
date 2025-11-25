@@ -74,12 +74,6 @@ server:
   port_udp: 53
   port_tcp: 53
   
-  # Security setting for DoH (HTTPS) and DoT (TLS).
-  # Controls behavior when a client requests a hostname (SNI or Path) not explicitly allowed below.
-  # - "drop": Immediately close the connection (secure).
-  # - "log_pass": Allow the connection but log a warning (for debugging).
-  listener_validation: "drop"
-
   # Enable identifying clients via EDNS Client Subnet (ECS).
   # If true, and a query contains an ECS option (Code 8), the IP in the ECS header
   # is used as the client IP for policy matching, overriding the network source IP.
@@ -88,33 +82,7 @@ server:
   # Enable identifying clients via EDNS0 MAC forwarding (Option 65001).
   # Used by forwarders like dnsmasq (add-mac) to pass client MAC addresses.
   # If detected, this overrides standard MAC lookups.
-  use_edns_mac: true
-
-  # --- DoT (DNS over TLS) ---
-  dot_enabled: true
-  port_dot: 853
-  tls_cert_file: "./cert.pem"
-  tls_key_file: "./key.pem"
-  
-  # Whitelist of Server Names (SNI) allowed for DoT connections.
-  dot_server_names: 
-    - "dns.example.com"
-    - "secure.home.arpa"
-
-  # --- DoH (DNS over HTTPS) ---
-  doh_enabled: true
-  port_doh: 443
-  
-  # Whitelist of Server Names (SNI) allowed for DoH connections.
-  doh_server_names:
-    - "dns.example.com"
-  
-  # Whitelist of URL paths for DoH queries (RFC 8484 standard is /dns-query).
-  # You can use custom paths for client identification (see Groups section).
-  doh_paths: 
-    - "/dns-query"
-    - "/family"
-    - "/guest"
+  use_edns_mac: false
 
 # =============================================================================
 # 3. UPSTREAM RESOLUTION
@@ -273,17 +241,15 @@ groups:
   # - Exact IP: "192.168.1.50"
   # - Subnet: "192.168.2.0/24"
   # - MAC Address: "00:11:22:33:44:55" (Linux only)
-  # - DoT/DoH SNI: "sni:kids.dns.example.com"
-  # - DoH Path: "path:/kids"
+  # - Server IP: "server_ip:192.168.1.200" (Matches destination IP)
+  # - Server Port: "server_port:5353" (Matches destination port)
   
   kids_devices:
     - "192.168.1.50"         # Gaming PC
-    - "sni:kids.dns.example.com"
-    - "path:/family"
+    - "00:22:44:55:66:88"    # iPad
 
   guest_network:
     - "192.168.2.0/24"       # Guest VLAN
-    - "path:/guest"
 
 # =============================================================================
 # 8. SCHEDULES
