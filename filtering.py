@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.1
-# Updated: 2025-11-25 08:00:00
+# Version: 1.0.0
+# Updated: 2025-11-25 11:35:00
 # -----------------------------------------------------------------------------
 
 import regex
@@ -14,12 +14,11 @@ import hashlib
 import logging
 import ipaddress
 import json
-from urllib.parse import urlparse
 from dnslib import QTYPE
 from utils import logger
 
 # -----------------------------------------------------------------------------
-# Domain Trie Data Structure
+# Domain Trie
 # -----------------------------------------------------------------------------
 class DomainTrie:
     __slots__ = ('root',)
@@ -222,7 +221,6 @@ class RuleEngine:
             qname = str(qname).lower().rstrip('.')
             for pat, original_rule, list_name in self.answer_block_regex:
                 if pat.search(qname): return True, original_rule, list_name
-            
             match = self.answer_block_trie.match(qname)
             if match: return True, match['rule'], match['list']
         return False, None, None
