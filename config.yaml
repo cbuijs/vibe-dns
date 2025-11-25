@@ -138,6 +138,15 @@ upstream:
     - "8.8.8.8"
     - "2606:4700:4700::1111"
 
+  # Monitoring Mode:
+  # - "fastest": Regularly tests all servers and picks the lowest latency (Default).
+  # - "failover": Always uses the first server in the list. Switches only if it fails. 
+  #               Automatically falls back to primary when it recovers.
+  # - "sticky": Like failover, but stays on the backup server until IT fails. 
+  #             Does not automatically switch back to primary.
+  # - "loadbalance": Uses the server with the best average latency over time.
+  mode: "fastest"
+
   # How often (seconds) to ping upstreams to measure latency.
   monitor_interval: 60
   
