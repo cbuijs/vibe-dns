@@ -70,12 +70,18 @@ server:
 # Defines targets and health monitoring strategy.
 # =============================================================================
 upstream:
-  # Monitoring Mode: How to select the active upstream server.
-  # - "none": Disables all monitoring, uses servers in the order listed under the group.
-  # - "fastest": Sorts by current measured latency every interval. (Default)
-  # - "failover": Uses the first server in the list, switches only upon failure, and attempts to switch back.
-  # - "sticky": Same as failover, but stays with the working backup until it fails. (No automatic fallback)
-  # - "loadbalance": Sorts by lowest rolling average latency.
+  # Monitoring Mode: How to select the active upstream server. The core forwarding
+  # logic automatically tries the next available server if the current one fails to respond.
+  # Options: 
+  #   - "none": Disables all monitoring, uses servers in the order listed under the group.
+  #             If a server fails, it switches to the next one in the static list and attempts to switch back.
+  #   - "random": Selects a server randomly from the applicable group for each query.
+  #   - "roundrobin": Cycles through servers sequentially based on the order listed in the group.
+  #   - "fastest": Sorts by current measured latency every interval. (Default)
+  #   - "failover": If the current server fails, it switches to the currently available **fastest** server, 
+  #                 and attempts to switch back to the original fastest one when it recovers.
+  #   - "sticky": Same as failover, but stays with the working backup until it fails. (No automatic fallback)
+  #   - "loadbalance": Sorts by lowest rolling average latency.
   mode: "fastest"
 
   # Monitoring interval (seconds) to check upstream latency.
