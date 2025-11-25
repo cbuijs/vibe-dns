@@ -26,7 +26,7 @@ logging:
   #   - "INFO": Standard operational logs (queries, blocks, startup/shutdown).
   #   - "WARNING": Only issues that might affect service (e.g., list download failure).
   #   - "ERROR": Critical failures.
-  level: "INFO"
+  level: "DEBUG"
   
   # Enable logging to standard output (console/terminal).
   # Useful when running in foreground or container.
