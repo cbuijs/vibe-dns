@@ -187,8 +187,15 @@ response:
   #   - "last": Sets all TTLs to the TTL of the last record in the answer.
   ttl_sync_mode: "none"
   
-  # --- Blocking Behavior ---
+  # --- IP Blocking Behavior ---
   
+  # Behavior when an A or AAAA record is matched by an IP/CIDR block rule.
+  # Options:
+  #   - "filter": (Default) Only the matching A/AAAA record is removed from the answer. Other records are passed through.
+  #   - "block": If any A or AAAA record in the response matches a block rule, the entire DNS response is blocked
+  #              (returns block_rcode or block_ip).
+  ip_block_mode: "filter"
+
   # DNS Response Code sent when a query is blocked (if no IP injection occurs).
   # This is the default action if no IP injection is configured or if the query type is not A/AAAA.
   # Options: "REFUSED", "NXDOMAIN", "NOERROR", "SERVFAIL".
