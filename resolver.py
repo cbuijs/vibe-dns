@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 3.1.0
-# Updated: 2025-11-25 08:30:00
+# Version: 3.1.1
+# Updated: 2025-11-25 08:45:00
 # -----------------------------------------------------------------------------
 
 import asyncio
@@ -171,7 +171,9 @@ class DNSCache:
 # -----------------------------------------------------------------------------
 class UpstreamManager:
     def __init__(self, config):
-        self.servers = [] 
+        self.servers = []
+        # Initialize stats BEFORE parsing config, as parsing populates it
+        self.lb_stats = {} 
         self.parse_config(config)
         self.monitor_interval = config.get('monitor_interval', 60)
         self.monitor_on_query = config.get('monitor_on_query', False)
@@ -180,10 +182,6 @@ class UpstreamManager:
         self.loop = asyncio.get_event_loop()
         self.session = None 
         self.last_monitor_time = 0
-        
-        # For loadbalance mode: store history
-        # { 'host': { 'history': [lat1, lat2...], 'avg': 0.0 } }
-        self.lb_stats = {} 
 
     async def get_session(self):
         if self.session is None or self.session.closed: self.session = aiohttp.ClientSession()
@@ -253,27 +251,12 @@ class UpstreamManager:
             
         elif self.mode == 'failover':
             # Prefer original order (index 0 in config) unless it's dead (999)
-            # Sort keys: (is_dead, original_index)
-            # If latency >= 999, it's dead (True=1). If alive, it's 0.
             self.servers.sort(key=lambda x: (1 if x['latency'] >= 990 else 0, x['original_index']))
             
         elif self.mode == 'sticky':
-            # If current primary is alive, keep it. If dead, move to next alive.
-            # We don't re-sort blindly. We only rotate if [0] is dead.
+            # Only rotate if current primary is dead
             if self.servers[0]['latency'] >= 990:
-                # Find first alive server
-                alive = [s for s in self.servers if s['latency'] < 990]
-                if alive:
-                    # Move best alive to front, keep others relative
-                    # Simple sort: primary candidate first, then original index
-                    best = min(alive, key=lambda x: x['original_index']) # Prefer lower index among alive?
-                    # Actually sticky usually means "stay on current backup". 
-                    # If we just sort by (dead, current_position), we effectively failover and stay.
-                    # But 'current_position' changes as we sort list.
-                    # Strategy: Sort by (dead, priority). 'Priority' is 0 for current primary, 1 for others.
-                    pass # Implicitly handled if we just sort by deadness, effectively rotating dead to end.
-                    self.servers.sort(key=lambda x: (1 if x['latency'] >= 990 else 0, x['original_index']))
-            # If current is alive, we do NOTHING to the order, effectively "sticking".
+                 self.servers.sort(key=lambda x: (1 if x['latency'] >= 990 else 0, x['original_index']))
 
         elif self.mode == 'loadbalance':
             # Sort by Average Latency over time
@@ -381,22 +364,20 @@ class DNSHandler:
 
     def identify_client(self, addr, meta=None):
         ip = addr[0]
-        # ECS & MAC Override Logic
         mac = None
-        
+        mac_source = "ARP"
+
         if meta:
-            # 1. ECS IP Override
             if 'ecs_ip' in meta and meta['ecs_ip']:
                 ip = meta['ecs_ip']
-                # Skip standard MAC lookup if ECS provided IP
+                mac_source = "SKIPPED (ECS)"
             
-            # 2. MAC Override (EDNS option 65001)
             if 'mac_override' in meta and meta['mac_override']:
                 mac = meta['mac_override']
-            
-        # 3. Standard MAC Lookup (Only if not overridden)
-        if not mac and not (meta and meta.get('ecs_ip')):
-            mac = self.mac_mapper.get_mac(ip)
+                mac_source = "EDNS"
+
+        if not mac and mac_source != "SKIPPED (ECS)":
+             mac = self.mac_mapper.get_mac(ip)
 
         sni = meta.get('sni', '').lower() if meta else ''
         path = meta.get('path', '').lower() if meta else ''
@@ -411,7 +392,7 @@ class DNSHandler:
                     logger.info(f"MATCH CLIENT: IP {ip} -> Group '{gname}' (CIDR {ident})")
                     return gname
                 if mac and ident == mac.lower():
-                    logger.info(f"MATCH CLIENT: MAC {mac} (IP: {ip}) -> Group '{gname}'")
+                    logger.info(f"MATCH CLIENT: MAC {mac} (IP: {ip}) -> Group '{gname}' (Source: {mac_source})")
                     return gname
                 if ident.startswith('sni:') and sni and sni == ident[4:]:
                     logger.info(f"MATCH CLIENT: SNI {sni} (IP: {ip}) -> Group '{gname}'")
@@ -561,58 +542,45 @@ class DNSHandler:
             qid = request.header.id
             client_ip = client_addr[0]
 
-            # --- Extract ECS and MAC Options ---
-            if request.ar:
+            if self.use_ecs and request.ar:
                 for rr in request.ar:
                     if rr.rtype == QTYPE.OPT:
                          try:
                              options = []
-                             if hasattr(rr.rdata, 'options'):
-                                 options = rr.rdata.options
-                             elif isinstance(rr.rdata, list):
-                                 options = rr.rdata
+                             if hasattr(rr.rdata, 'options'): options = rr.rdata.options
+                             elif isinstance(rr.rdata, list): options = rr.rdata
 
                              for opt in options:
-                                 # Option 8: ECS
-                                 if self.use_ecs and opt.code == 8:
+                                 if opt.code == 8:
                                      family, src_mask, scope_mask = struct.unpack("!HBB", opt.data[:4])
                                      addr_data = opt.data[4:]
-                                     
-                                     if family == 1: # IPv4
+                                     if family == 1:
                                          addr_bytes = addr_data + b'\x00' * (4 - len(addr_data))
-                                         ecs_ip_obj = ipaddress.IPv4Address(addr_bytes)
-                                         client_ip = str(ecs_ip_obj)
-                                     elif family == 2: # IPv6
+                                         client_ip = str(ipaddress.IPv4Address(addr_bytes))
+                                     elif family == 2:
                                          addr_bytes = addr_data + b'\x00' * (16 - len(addr_data))
-                                         ecs_ip_obj = ipaddress.IPv6Address(addr_bytes)
-                                         client_ip = str(ecs_ip_obj)
+                                         client_ip = str(ipaddress.IPv6Address(addr_bytes))
                                      
                                      if logger.isEnabledFor(logging.DEBUG):
                                          logger.debug(f"[ID:{qid}] ECS DETECTED: Override Client IP to {client_ip}")
-                                     
                                      if meta is None: meta = {}
                                      meta['ecs_ip'] = client_ip
 
-                                 # Option 65001: Custom MAC
                                  if self.use_edns_mac and opt.code == 65001:
                                      if len(opt.data) >= 6:
-                                         mac_bytes = opt.data[:6]
-                                         mac_str = binascii.hexlify(mac_bytes).decode('utf-8')
+                                         mac_str = binascii.hexlify(opt.data[:6]).decode('utf-8')
                                          mac_fmt = ':'.join(mac_str[i:i+2] for i in range(0, 12, 2))
                                          if logger.isEnabledFor(logging.DEBUG):
                                              logger.debug(f"[ID:{qid}] EDNS MAC DETECTED: {mac_fmt}")
                                          if meta is None: meta = {}
                                          meta['mac_override'] = mac_fmt
-
                          except Exception as e:
                              logger.debug(f"[ID:{qid}] Failed to parse EDNS Options: {e}")
             
-            # 1. Identify Client
             group = self.identify_client(client_addr, meta)
             policy_name = self.get_active_policy(group)
             engine = self.rule_engines.get(policy_name)
 
-            # 2. CACHE CHECK
             cached_record, ttl_remain, hits = self.cache.get(qname, qtype, scope=policy_name)
             if cached_record:
                 logger.info(f"[ID:{qid}] [IP:{client_ip}] CACHE HIT [{policy_name}]: {qname} TTL: {int(ttl_remain)}s Hits: {hits}")
@@ -628,7 +596,6 @@ class DNSHandler:
                 self.log_answer_records(reply, qid, client_ip)
                 return reply.pack()
 
-            # 3. Rate Limiting
             limit_action = self.rate_limiter.check(client_ip, meta.get('proto', 'udp'))
             if limit_action == "DROP": 
                 logger.warning(f"[ID:{qid}] [IP:{client_ip}] RATE LIMIT DROP: {client_ip}")
@@ -638,7 +605,6 @@ class DNSHandler:
                 reply.header.tc = 1
                 return reply.pack()
 
-            # 4. Schedule Blocking
             if policy_name == "BLOCK":
                 logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH SCHEDULE BLOCK (QUERY): {qname} denied by '{group}' schedule.")
                 block_resp = self.create_block_response(request, qname, qtype)
@@ -654,7 +620,6 @@ class DNSHandler:
                      for cat, score in cat_results.items():
                          logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH CATEGORY: {qname} -> {cat} ({score}%)")
 
-            # 5. Policy Check
             if engine:
                 blocked_type, type_reason, type_list = engine.check_type(qtype)
                 if blocked_type:
@@ -673,7 +638,6 @@ class DNSHandler:
                 elif action == "ALLOW":
                     logger.info(f"[ID:{qid}] [IP:{client_ip}] ALLOW DOMAIN (QUERY): {qname} Rule: '{rule}' ({list_name})")
 
-            # 6. Upstream
             async def resolve_worker():
                 return await self._resolve_upstream(qname, qtype, data, qid, engine, policy_name, request, client_ip)
 
