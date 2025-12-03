@@ -1,37 +1,50 @@
 #!/usr/bin/env python3
+# filename: resolver.py
 # -----------------------------------------------------------------------------
-# Project: Filtering DNS Server
-# Version: 1.0.0
-# Updated: 2025-11-25 11:35:00
+# Project: Filtering DNS Server (Refactored)
+# Version: 3.9.2 (Fix: Round Robin RRset)
 # -----------------------------------------------------------------------------
+"""
+Core DNS Resolution & Processing Logic.
+
+Updates:
+- **Fix**: In `round_robin_answers`, replaced `rrset.extend(items)` with a loop 
+  calling `rrset.add(item)`. `dnspython` RRsets do not support extend.
+"""
 
 import asyncio
 import time
 import random
 import ipaddress
-import ssl
 import logging
-import struct
-import binascii
-from datetime import datetime
-from urllib.parse import urlparse
-from dnslib import DNSRecord, QTYPE, RCODE, RR, A, AAAA, DNSHeader
-import aiohttp
+from typing import Any, Optional
 
-from utils import logger, is_ip_in_network
+# dnspython imports
+import dns.message
+import dns.rdatatype
+import dns.rcode
+import dns.rrset
+import dns.rdata
+import dns.edns
+import dns.flags
+import dns.name
 
-# -----------------------------------------------------------------------------
-# Rate Limiter
-# -----------------------------------------------------------------------------
+from utils import get_logger, ContextAdapter, is_ip_in_network
+from upstream_manager import UpstreamManager
+
+logger = get_logger("Resolver")
+
 class RateLimiter:
-    def __init__(self, config):
+    """Tracks request rates per client IP/Subnet to prevent abuse."""
+    def __init__(self, config: dict | None):
+        config = config or {}
         self.enabled = config.get('enabled', True)
         self.window = config.get('window_seconds', 60)
         self.udp_thresh = config.get('udp_threshold', 100)
         self.total_thresh = config.get('total_threshold', 200)
         self.ipv4_mask = config.get('ipv4_mask', 32)
         self.ipv6_mask = config.get('ipv6_mask', 128)
-        self.clients = {}
+        self.clients: dict[str, dict] = {}
         asyncio.create_task(self.gc_loop())
 
     async def gc_loop(self):
@@ -41,22 +54,21 @@ class RateLimiter:
             expired = [k for k, v in self.clients.items() if now - v['start'] > (self.window * 2)]
             for k in expired: del self.clients[k]
 
-    def get_subnet_key(self, ip_str):
+    def get_subnet_key(self, ip_str: str) -> str:
         try:
             ip = ipaddress.ip_address(ip_str)
             if ip.version == 4:
                 if self.ipv4_mask < 32: return str(ipaddress.IPv4Network((ip, self.ipv4_mask), strict=False))
-                return str(ip)
             elif ip.version == 6:
                 if self.ipv6_mask < 128: return str(ipaddress.IPv6Network((ip, self.ipv6_mask), strict=False))
-                return str(ip)
-        except Exception: pass
-        return ip_str 
+            return str(ip)
+        except Exception: return ip_str
 
-    def check(self, ip, proto):
+    def check(self, ip: str, proto: str) -> str:
         if not self.enabled: return "ALLOW"
         subnet_key = self.get_subnet_key(ip)
         now = time.time()
+        
         if subnet_key not in self.clients: self.clients[subnet_key] = {'start': now, 'udp': 0, 'total': 0}
         entry = self.clients[subnet_key]
         
@@ -66,26 +78,22 @@ class RateLimiter:
         entry['total'] += 1
         if proto == 'udp': entry['udp'] += 1
             
-        if entry['total'] > self.total_thresh:
-            return "DROP"
-        if proto == 'udp' and entry['udp'] > self.udp_thresh:
-            return "TC"
+        if entry['total'] > self.total_thresh: return "DROP"
+        if proto == 'udp' and entry['udp'] > self.udp_thresh: return "TC"
         return "ALLOW"
 
-# -----------------------------------------------------------------------------
-# Request Deduplicator
-# -----------------------------------------------------------------------------
 class RequestDeduplicator:
-    def __init__(self, enabled=True):
+    """Coalesces identical concurrent requests."""
+    def __init__(self, enabled: bool = True):
         self.enabled = enabled
-        self.pending = {}
+        self.pending: dict[tuple, asyncio.Future] = {}
 
-    async def get_or_process(self, qname, qtype, scope, worker_coroutine):
+    async def get_or_process(self, key: tuple, worker_coroutine):
         if not self.enabled: return await worker_coroutine()
-        key = (qname, qtype, scope)
+        
         if key in self.pending:
-            logger.debug(f"MATCH DEDUPLICATION: Joining in-flight query for {qname} [{scope}]")
             return await self.pending[key]
+            
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self.pending[key] = future
@@ -99,17 +107,16 @@ class RequestDeduplicator:
         finally:
             if key in self.pending: del self.pending[key]
 
-# -----------------------------------------------------------------------------
-# Caching
-# -----------------------------------------------------------------------------
 class DNSCache:
+    """
+    In-memory DNS cache. 
+    Keys are: (qname, qtype, group, scope) to ensure group isolation.
+    """
     def __init__(self, size, ttl_margin, negative_ttl, gc_interval=300, prefetch_min_hits=3):
-        self.cache = {} 
-        self.size = size
-        self.margin = ttl_margin
-        self.negative_ttl = negative_ttl
-        self.max_size = size
-        self.DEFAULT_SCOPE = "DEFAULT_CACHE"
+        self.cache: dict[tuple, tuple[bytes, float, int]] = {} 
+        self.size = size or 10000
+        self.margin = ttl_margin or 0
+        self.negative_ttl = negative_ttl or 60
         self.gc_interval = gc_interval
         self.prefetch_min_hits = prefetch_min_hits
         asyncio.create_task(self.gc_loop())
@@ -119,12 +126,11 @@ class DNSCache:
             await asyncio.sleep(self.gc_interval)
             now = time.time()
             expired = [k for k, v in self.cache.items() if v[1] < now]
-            for k in expired: del self.cache[k]
-            if expired: logger.info(f"CACHE GC: Flushed {len(expired)} items.")
+            if expired:
+                for k in expired: del self.cache[k]
 
-    def get(self, qname, qtype, scope=None):
-        if scope is None: scope = self.DEFAULT_SCOPE
-        key = (str(qname), qtype, scope)
+    def get(self, qname: str, qtype: int, group: str = "default", scope: str = "DEFAULT") -> tuple[dns.message.Message | None, float, int]:
+        key = (qname, qtype, group, scope)
         if key in self.cache:
             record_bytes, expire_time, hits = self.cache[key]
             now = time.time()
@@ -133,286 +139,124 @@ class DNSCache:
                 try:
                     new_hits = hits + 1
                     self.cache[key] = (record_bytes, expire_time, new_hits)
-                    record = DNSRecord.parse(record_bytes)
-                    for rr in record.rr: rr.ttl = int(ttl_remain)
-                    for rr in record.ar: rr.ttl = int(ttl_remain)
-                    for rr in record.auth: rr.ttl = int(ttl_remain)
-                    return record, ttl_remain, new_hits
+                    msg = dns.message.from_wire(record_bytes)
+                    for section in (msg.answer, msg.authority, msg.additional):
+                        for rrset in section:
+                            rrset.ttl = int(ttl_remain)
+                    return msg, ttl_remain, new_hits
                 except Exception: del self.cache[key]
             else:
-                logger.debug(f"CACHE EXPIRED: {qname} [{QTYPE[qtype]}]")
                 del self.cache[key]
         return None, 0, 0
 
-    def put(self, record, scope=None, forced_ttl=None):
-        if self.max_size == 0: return
-        if scope is None: scope = self.DEFAULT_SCOPE
-        if len(self.cache) >= self.max_size:
-            keys = list(self.cache.keys())
-            del self.cache[random.choice(keys)]
-            logger.debug("CACHE GC: Evicted random entry")
-
-        qname = str(record.q.qname)
-        qtype = record.q.qtype
-        if forced_ttl is not None: min_ttl = forced_ttl
+    def put(self, message: dns.message.Message, group: str = "default", scope: str = "DEFAULT", forced_ttl: int | None = None, req_logger=logger):
+        if self.size == 0: return
+        if len(self.cache) >= self.size:
+            del self.cache[random.choice(list(self.cache.keys()))]
+            
+        if not message.question: return
+        qname = str(message.question[0].name)
+        qtype = message.question[0].rdtype
+        
+        if forced_ttl is not None:
+            min_ttl = forced_ttl
         else:
-            ttls = [rr.ttl for rr in record.rr]
-            if not ttls:
-                ttls = [rr.ttl for rr in record.ar] + [rr.ttl for rr in record.auth]
+            ttls = []
+            for section in (message.answer, message.authority, message.additional):
+                for rrset in section:
+                    ttls.append(rrset.ttl)
             min_ttl = min(ttls) if ttls else self.negative_ttl
         
         expire_time = time.time() + min_ttl
-        key = (qname, qtype, scope)
-        self.cache[key] = (record.pack(), expire_time, 0)
-        logger.info(f"CACHE WRITE [{scope}]: {qname} [{QTYPE[qtype]}] Stored TTL: {int(min_ttl)}s")
-
-# -----------------------------------------------------------------------------
-# Upstream Manager
-# -----------------------------------------------------------------------------
-class UpstreamManager:
-    def __init__(self, config):
-        self.servers = [] 
-        self.lb_stats = {}
-        self.parse_config(config)
-        self.monitor_interval = config.get('monitor_interval', 60)
-        self.monitor_on_query = config.get('monitor_on_query', False)
-        self.mode = config.get('mode', 'fastest')
-        self.test_domain = config.get('test_domain', 'www.google.com')
-        self.loop = asyncio.get_event_loop()
-        self.session = None 
-        self.last_monitor_time = 0
-
-    async def get_session(self):
-        if self.session is None or self.session.closed: self.session = aiohttp.ClientSession()
-        return self.session
-
-    def parse_config(self, config):
-        raw_servers = config.get('servers', [])
-        for s in raw_servers:
-            forced_ip = None
-            if '#' in s: s, forced_ip = s.split('#')
-            if '://' in s: proto, rest = s.split('://')
-            else: proto, rest = 'udp', s
-            path = "/dns-query"
-            if proto in ['https', 'doh'] and '/' in rest:
-                parts = rest.split('/', 1)
-                rest, path = parts[0], '/' + parts[1]
-            if ':' in rest and not rest.endswith(']'): 
-                host, port = rest.split(':')
-                port = int(port)
-            else:
-                host, port = rest, 53 if proto in ['udp','tcp'] else 853 if proto == 'tls' else 443
-            self.servers.append({
-                'proto': proto, 'host': host, 'ip': forced_ip or host, 
-                'port': port, 'path': path, 'latency': 999,
-                'original_index': len(self.servers)
-            })
-            self.lb_stats[host] = {'history': [], 'avg': 999.0}
-
-    async def start_monitor(self):
-        await self.check_latencies()
-        while True:
-            await asyncio.sleep(self.monitor_interval)
-            if not self.monitor_on_query: await self.check_latencies()
-
-    async def check_latencies_if_needed(self):
-        if self.monitor_on_query:
-            if time.time() - self.last_monitor_time > self.monitor_interval:
-                asyncio.create_task(self.check_latencies())
-
-    async def check_latencies(self):
-        logger.debug("UPSTREAM MONITOR: Starting latency check...")
-        self.last_monitor_time = time.time()
-        tasks = [self._measure_latency(s) for s in self.servers]
-        results = await asyncio.gather(*tasks)
-        for i, lat in enumerate(results): 
-            srv = self.servers[i]
-            srv['latency'] = lat
-            stats = self.lb_stats[srv['host']]
-            stats['history'].append(lat)
-            if len(stats['history']) > 5: stats['history'].pop(0)
-            stats['avg'] = sum(stats['history']) / len(stats['history'])
-            logger.debug(f"UPSTREAM MONITOR: {srv['host']} -> {lat:.3f}s (Avg: {stats['avg']:.3f}s)")
-        
-        old_fastest = self.servers[0] if self.servers else None
-        
-        if self.mode == 'fastest':
-            self.servers.sort(key=lambda x: x['latency'])
-        elif self.mode == 'failover':
-            self.servers.sort(key=lambda x: (1 if x['latency'] >= 990 else 0, x['original_index']))
-        elif self.mode == 'sticky':
-            if self.servers[0]['latency'] >= 990:
-                 self.servers.sort(key=lambda x: (1 if x['latency'] >= 990 else 0, x['original_index']))
-        elif self.mode == 'loadbalance':
-            self.servers.sort(key=lambda x: self.lb_stats[x['host']]['avg'])
-
-        new_fastest = self.servers[0] if self.servers else None
-        if old_fastest and new_fastest and old_fastest['host'] != new_fastest['host']:
-            logger.info(f"UPSTREAM SWITCH: {old_fastest['host']} -> {new_fastest['host']} ({new_fastest['latency']:.3f}s)")
-
-    async def _measure_latency(self, server):
-        start = time.time()
-        try:
-            q = DNSRecord.question(self.test_domain)
-            pkt = q.pack()
-            timeout = 2.0 
-            if server['proto'] == 'udp': await self._udp_query(server['ip'], server['port'], pkt, timeout=timeout)
-            elif server['proto'] == 'tcp': await self._tcp_query(server['ip'], server['port'], pkt, timeout=timeout)
-            elif server['proto'] == 'tls': await self._tcp_query(server['ip'], server['port'], pkt, timeout=timeout, tls=True, hostname=server['host'])
-            elif server['proto'] in ['https', 'doh']: await self._doh_query(server['ip'], server['port'], server['host'], server['path'], pkt, timeout=timeout)
-            return time.time() - start
-        except: return 999.0
-
-    async def forward_query(self, query_data, qid=0, client_ip="Unknown"):
-        await self.check_latencies_if_needed()
-        for server in self.servers[:3]:
-            try:
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] FORWARDING: to {server['host']} ({server['proto']}://{server['ip']}:{server['port']})")
-                if server['proto'] == 'udp': return await self._udp_query(server['ip'], server['port'], query_data)
-                elif server['proto'] == 'tcp': return await self._tcp_query(server['ip'], server['port'], query_data)
-                elif server['proto'] == 'tls': return await self._tcp_query(server['ip'], server['port'], query_data, tls=True, hostname=server['host'])
-                elif server['proto'] in ['https', 'doh']: return await self._doh_query(server['ip'], server['port'], server['host'], server['path'], query_data)
-            except Exception as e:
-                logger.warning(f"[ID:{qid}] [IP:{client_ip}] UPSTREAM FAILED {server['host']}: {e}")
-                continue
-        return None
-
-    async def _udp_query(self, ip, port, data, timeout=5):
-        import socket
-        sock_family = socket.AF_INET6 if ':' in ip else socket.AF_INET
-        sock = socket.socket(sock_family, socket.SOCK_DGRAM)
-        sock.setblocking(False)
-        try:
-            await self.loop.sock_connect(sock, (ip, port))
-            await self.loop.sock_sendall(sock, data)
-            response = await asyncio.wait_for(self.loop.sock_recv(sock, 65535), timeout)
-            return response
-        finally: sock.close()
-
-    async def _tcp_query(self, ip, port, data, timeout=5, tls=False, hostname=None):
-        ssl_ctx = None
-        if tls:
-            ssl_ctx = ssl.create_default_context()
-            if hostname: ssl_ctx.check_hostname = True
-            else: ssl_ctx.check_hostname, ssl_ctx.verify_mode = False, ssl.CERT_NONE
-        reader, writer = await asyncio.open_connection(ip, port, ssl=ssl_ctx, server_hostname=hostname if tls else None)
-        try:
-            writer.write(len(data).to_bytes(2, 'big') + data)
-            await writer.drain()
-            len_bytes = await asyncio.wait_for(reader.readexactly(2), timeout)
-            resp_len = int.from_bytes(len_bytes, 'big')
-            return await asyncio.wait_for(reader.readexactly(resp_len), timeout)
-        finally:
-            writer.close()
-            try: await writer.wait_closed()
-            except: pass
-
-    async def _doh_query(self, ip, port, hostname, path, data, timeout=5):
-        session = await self.get_session()
-        url = f"https://{hostname}:{port}{path}"
-        headers = {'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message'}
-        async with session.post(url, data=data, headers=headers, timeout=timeout) as resp:
-            if resp.status == 200: return await resp.read()
-            raise Exception(f"DoH status {resp.status}")
-
-# -----------------------------------------------------------------------------
-# Request Handler
-# -----------------------------------------------------------------------------
+        key = (qname, qtype, group, scope)
+        self.cache[key] = (message.to_wire(), expire_time, 0)
+        req_logger.debug(f"Cache Write [{group}/{scope}]: {qname} TTL={int(min_ttl)}s")
 
 class DNSHandler:
     def __init__(self, config, policy_map, default_policy, rule_engines, groups, mac_mapper, upstream, cache):
-        self.config = config
-        self.policy_map = policy_map
-        self.rule_engines = rule_engines
-        self.groups = groups
+        self.config = config or {}
+        self.policy_map = policy_map or {}
+        self.rule_engines = rule_engines or {}
+        self.groups = groups or {}
         self.mac_mapper = mac_mapper
         self.upstream = upstream
         self.cache = cache
-        self.schedules = config.get('schedules', {})
+        self.schedules = self.config.get('schedules') or {}
         
-        self.block_rcode = getattr(RCODE, config['response'].get('block_rcode', 'REFUSED'))
-        self.block_ip_opt = config['response'].get('block_ip', None)
-        self.block_ttl = config['response'].get('block_ttl', 60)
+        response_cfg = self.config.get('response') or {}
+        self.block_rcode = getattr(dns.rcode, response_cfg.get('block_rcode', 'REFUSED'))
+        self.block_ip_opt = response_cfg.get('block_ip', None)
+        self.block_ttl = response_cfg.get('block_ttl', 60)
+        self.ip_block_mode = response_cfg.get('ip_block_mode', 'filter')
+        self.round_robin = response_cfg.get('round_robin_enabled', False)
+        self.match_answers_globally = response_cfg.get('match_answers_globally', False)
         
-        self.rate_limiter = RateLimiter(config.get('rate_limit', {}))
-        self.deduplicator = RequestDeduplicator(config.get('deduplication', {}).get('enabled', True))
+        self.rate_limiter = RateLimiter(self.config.get('rate_limit', {}))
+        dedup_cfg = self.config.get('deduplication') or {}
+        self.deduplicator = RequestDeduplicator(dedup_cfg.get('enabled', True))
         self.DEFAULT_POLICY_SCOPE = "DEFAULT_CACHE"
         
-        self.prefetch_margin = config['cache'].get('prefetch_margin', 0)
-        self.prefetch_min_hits = config['cache'].get('prefetch_min_hits', 3)
-        self.round_robin = config['response'].get('round_robin_enabled', False)
-        self.categorization_enabled = config.get('categorization_enabled', False)
-        self.use_ecs = config['server'].get('use_ecs', False)
-        self.use_edns_mac = config['server'].get('use_edns_mac', False)
-
-    def identify_client(self, addr, meta=None):
-        ip = addr[0]
-        mac = None
-        mac_source = "ARP"
-
-        # Safe access to meta with default empty string
-        sni = (meta.get('sni') or '') if meta else ''
-        path = (meta.get('path') or '') if meta else ''
-        sni = sni.lower()
-        path = path.lower()
-        proto = (meta.get('proto') or 'udp').lower() if meta else 'udp'
-
-        # New matchers: server_ip and server_port
-        srv_ip = (meta.get('server_ip') or '').lower() if meta else ''
-        srv_port = str(meta.get('server_port', '')) if meta else ''
-
-        if meta:
-            if 'ecs_ip' in meta and meta['ecs_ip']:
-                ip = meta['ecs_ip']
-                mac_source = "SKIPPED (ECS)"
-            
-            if 'mac_override' in meta and meta['mac_override']:
-                mac = meta['mac_override']
-                mac_source = "EDNS"
-
-        if not mac and mac_source != "SKIPPED (ECS)":
-             mac = self.mac_mapper.get_mac(ip)
+        self.prefetch_margin = self.config.get('cache', {}).get('prefetch_margin', 0)
+        self.prefetch_min_hits = self.config.get('cache', {}).get('prefetch_min_hits', 3)
         
+        server_cfg = self.config.get('server') or {}
+        self.categorization_enabled = self.config.get('categorization_enabled', True)
+        self.forward_ecs_mode = server_cfg.get('forward_ecs_mode', 'none').lower()
+        self.forward_mac_mode = server_cfg.get('forward_mac_mode', 'none').lower()
+        
+        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}, AnswerMatching: {self.match_answers_globally}")
+
+    def identify_client(self, addr, meta, req_logger) -> str | None:
+        source_ip = addr[0]
+        match_ip = source_ip
+        mac = None
+        
+        srv_ip = (meta.get('server_ip') or '').lower()
+        srv_port = str(meta.get('server_port', ''))
+
+        if meta.get('ecs_ip'):
+            match_ip = meta['ecs_ip']
+        
+        if meta.get('mac_override'):
+            mac = meta['mac_override']
+
+        if not mac:
+             mac = self.mac_mapper.get_mac(source_ip)
+        
+        req_logger.debug(f"ID Params: IP={match_ip}, MAC={mac}, Port={srv_port}")
+
         for gname, identifiers in self.groups.items():
+            if not identifiers: continue
             for ident in identifiers:
                 ident = ident.lower()
-                if ident == ip:
-                    logger.info(f"MATCH CLIENT: IP {ip} -> Group '{gname}' (Exact IP)")
-                    return gname
-                if '/' in ident and not ident.startswith('path:') and is_ip_in_network(ip, ident):
-                    logger.info(f"MATCH CLIENT: IP {ip} -> Group '{gname}' (CIDR {ident})")
-                    return gname
-                if mac and ident == mac.lower():
-                    logger.info(f"MATCH CLIENT: MAC {mac} (IP: {ip}) -> Group '{gname}' (Source: {mac_source})")
-                    return gname
-                if ident.startswith('sni:') and sni and sni == ident[4:]:
-                    logger.info(f"MATCH CLIENT: SNI {sni} (IP: {ip}) -> Group '{gname}'")
-                    return gname
-                if ident.startswith('path:') and path and path == ident[5:]:
-                    logger.info(f"MATCH CLIENT: PATH {path} (IP: {ip}) -> Group '{gname}'")
-                    return gname
-                
-                # New Matchers
                 if ident.startswith('server_ip:') and srv_ip == ident[10:]:
-                    logger.info(f"MATCH CLIENT: Server IP {srv_ip} (Client: {ip}) -> Group '{gname}'")
+                    req_logger.info(f"Client identified as group '{gname}'. Reason: Matched Listening IP '{srv_ip}'")
                     return gname
                 if ident.startswith('server_port:') and srv_port == ident[12:]:
-                    logger.info(f"MATCH CLIENT: Server Port {srv_port} (Client: {ip}) -> Group '{gname}'")
+                    req_logger.info(f"Client identified as group '{gname}'. Reason: Matched Listening Port '{srv_port}'")
                     return gname
-
+                if mac and ident == mac.lower():
+                    req_logger.info(f"Client identified as group '{gname}'. Reason: Matched MAC '{mac}'")
+                    return gname
+                if ident == match_ip:
+                    req_logger.info(f"Client identified as group '{gname}'. Reason: Matched IP '{match_ip}'")
+                    return gname
+                if '/' in ident and not ident.startswith('path:') and is_ip_in_network(match_ip, ident):
+                    req_logger.info(f"Client identified as group '{gname}'. Reason: IP '{match_ip}' is in Subnet '{ident}'")
+                    return gname
+        
         return None
 
     def is_schedule_active(self, schedule_name):
         if not schedule_name or schedule_name not in self.schedules: return False
-        schedule = self.schedules[schedule_name]
+        schedule_list = self.schedules[schedule_name]
+        if isinstance(schedule_list, dict): schedule_list = [schedule_list]
+        from datetime import datetime
         now = datetime.now()
-        current_day = now.strftime("%a")
         current_hm = now.strftime("%H:%M")
-        if "days" in schedule and current_day not in schedule["days"]: return False
-        slots = schedule.get("slots", [])
-        if "start" in schedule and "end" in schedule: slots.append({"start": schedule["start"], "end": schedule["end"]})
-        for slot in slots:
-            start, end = slot.get("start"), slot.get("end")
+        for block in schedule_list:
+            if "days" in block and now.strftime("%a") not in block["days"]: continue
+            start, end = block.get("start"), block.get("end")
             if not start or not end: continue
             if start <= end:
                 if start <= current_hm < end: return True
@@ -420,338 +264,365 @@ class DNSHandler:
                 if current_hm >= start or current_hm < end: return True
         return False
 
-    def get_active_policy(self, group):
+    def get_active_policy(self, group, req_logger):
         if not group or group not in self.policy_map: return self.DEFAULT_POLICY_SCOPE
         assignment = self.policy_map[group]
         default_policy = assignment.get('policy', self.DEFAULT_POLICY_SCOPE)
         schedule_name = assignment.get('schedule')
         if self.is_schedule_active(schedule_name):
             sched_policy = assignment.get('schedule_policy')
-            if sched_policy:
-                logger.info(f"MATCH SCHEDULE: '{schedule_name}' is ACTIVE. Override Policy: {default_policy} -> {sched_policy}")
-                return sched_policy
+            req_logger.info(f"Schedule '{schedule_name}' is ACTIVE. Overriding policy {default_policy} -> {sched_policy}")
+            return sched_policy
         return default_policy
 
-    def create_block_response(self, request, qname, qtype):
-        reply = request.reply()
-        inject_ip = None
+    def create_block_response(self, request: dns.message.Message, qname_obj, qtype) -> dns.message.Message:
+        reply = dns.message.make_response(request)
+        reply.set_rcode(self.block_rcode)
         
-        if self.block_ip_opt:
+        inject_ip = None
+        if self.block_ip_opt and qtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
             if self.block_ip_opt == "NULL":
-                if qtype == QTYPE.A: inject_ip = "0.0.0.0"
-                elif qtype == QTYPE.AAAA: inject_ip = "::"
+                if qtype == dns.rdatatype.A: inject_ip = "0.0.0.0"
+                elif qtype == dns.rdatatype.AAAA: inject_ip = "::"
             else:
                 try:
                     ip_obj = ipaddress.ip_address(self.block_ip_opt)
-                    if qtype == QTYPE.A and ip_obj.version == 4:
-                        inject_ip = self.block_ip_opt
-                    elif qtype == QTYPE.AAAA and ip_obj.version == 6:
-                        inject_ip = self.block_ip_opt
-                except ValueError:
-                    pass # Invalid IP in config
+                    if qtype == dns.rdatatype.A and ip_obj.version == 4: inject_ip = self.block_ip_opt
+                    elif qtype == dns.rdatatype.AAAA and ip_obj.version == 6: inject_ip = self.block_ip_opt
+                except ValueError: pass
 
         if inject_ip:
-            try:
-                if qtype == QTYPE.A: 
-                    reply.add_answer(RR(qname, QTYPE.A, rdata=A(inject_ip), ttl=self.block_ttl))
-                    reply.header.rcode = RCODE.NOERROR
-                elif qtype == QTYPE.AAAA: 
-                    reply.add_answer(RR(qname, QTYPE.AAAA, rdata=AAAA(inject_ip), ttl=self.block_ttl))
-                    reply.header.rcode = RCODE.NOERROR
-            except Exception as e:
-                logger.error(f"Failed to inject block IP {inject_ip}: {e}")
-                reply.header.rcode = self.block_rcode
-        else:
-            reply.header.rcode = self.block_rcode
+            reply.set_rcode(dns.rcode.NOERROR)
+            rdata = dns.rdata.from_text(dns.rdataclass.IN, qtype, inject_ip)
+            rrset = dns.rrset.from_rdata(qname_obj, self.block_ttl, rdata)
+            reply.answer.append(rrset)
             
-        reply.header.id = request.header.id
         return reply
 
-    def collapse_cnames(self, response, qid=0, client_ip="Unknown"):
-        if not self.config['response'].get('cname_collapse', True): return
-        max_iterations = 10
-        qname = response.q.qname
-        
-        cnames_removed = 0
-        records_hoisted = 0
-        
-        for _ in range(max_iterations):
-            qname_str = str(qname).lower()
-            cname_rr = None
-            for rr in response.rr:
-                if rr.rtype == QTYPE.CNAME and str(rr.rname).lower() == qname_str:
-                    cname_rr = rr
-                    break
-            
-            if not cname_rr: break
-            target_str = str(cname_rr.rdata).lower()
-            target_rrs = [rr for rr in response.rr if str(rr.rname).lower() == target_str and rr is not cname_rr]
-            
-            if not target_rrs: break
-            
-            cnames_removed += 1
-            for rr in target_rrs: 
-                records_hoisted += 1
-                rr.rname = cname_rr.rname
-                if cname_rr.ttl < rr.ttl:
-                    rr.ttl = cname_rr.ttl
-
-            response.rr = [rr for rr in response.rr if rr is not cname_rr]
-        
-        if cnames_removed > 0:
-            logger.info(f"[ID:{qid}] [IP:{client_ip}] CNAME COLLAPSE: Flattened {cnames_removed} CNAMEs, hoisted {records_hoisted} records.")
-
-    def minimize_response(self, response, qid=0, client_ip="Unknown"):
-        if self.config['response'].get('minimize_response', False):
-            if response.ar or response.auth:
-                count_removed = len(response.ar) + len(response.auth)
-                response.ar = []
-                response.auth = []
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] RESPONSE MINIMIZED: Stripped {count_removed} records from Authority/Additional for {response.q.qname}")
-
-    def modify_ttls(self, response, qid=0, client_ip="Unknown"):
-        min_ttl = self.config['response'].get('min_ttl', 0)
-        max_ttl = self.config['response'].get('max_ttl', 86400)
-        sync_mode = self.config['response'].get('ttl_sync_mode', 'none')
-        if not response.rr: return
-
-        ttls = [rr.ttl for rr in response.rr]
-        new_ttl = None
-        if sync_mode != 'none':
-            if sync_mode == 'first': new_ttl = ttls[0]
-            elif sync_mode == 'last': new_ttl = ttls[-1]
-            elif sync_mode == 'highest': new_ttl = max(ttls)
-            elif sync_mode == 'lowest': new_ttl = min(ttls)
-            elif sync_mode == 'average': new_ttl = int(sum(ttls) / len(ttls))
-            logger.info(f"[ID:{qid}] [IP:{client_ip}] TTL SYNC: Mode '{sync_mode}' set all TTLs to {new_ttl}s")
-
-        for rr in response.rr:
-            if new_ttl is not None: rr.ttl = new_ttl
-            
-            if rr.ttl < min_ttl: 
-                rr.ttl = min_ttl
-                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Boosted {rr.ttl}s -> {min_ttl}s")
-            elif rr.ttl > max_ttl: 
-                rr.ttl = max_ttl
-                logger.debug(f"[ID:{qid}] [IP:{client_ip}] TTL CLAMP: Capped {rr.ttl}s -> {max_ttl}s")
-
-    def round_robin_answers(self, response, qid=0, client_ip="Unknown"):
-        if not self.round_robin:
+    def collapse_cnames(self, response: dns.message.Message, req_logger):
+        response_cfg = self.config.get('response') or {}
+        if not response_cfg.get('cname_collapse', True): 
             return
         
-        if not response.rr:
+        if not response.question: 
             return
-            
-        a_records = []
-        aaaa_records = []
-        other_records = []
+        qname = response.question[0].name
         
-        for rr in response.rr:
-            if rr.rtype == QTYPE.A:
-                a_records.append(rr)
-            elif rr.rtype == QTYPE.AAAA:
-                aaaa_records.append(rr)
+        # Find all CNAME records
+        cname_rrsets = []
+        final_rrsets = []  # A/AAAA/other records to keep
+        
+        for rrset in response.answer:
+            if rrset.rdtype == dns.rdatatype.CNAME:
+                cname_rrsets.append(rrset)
             else:
-                other_records.append(rr)
+                final_rrsets.append(rrset)
+        
+        if not cname_rrsets:
+            return  # No CNAMEs to collapse
+        
+        # Build CNAME chain to find final target
+        cname_chain = {}
+        for rrset in cname_rrsets:
+            cname_chain[rrset.name] = rrset[0].target
+        
+        # Find the final target in the chain
+        current = qname
+        visited = set()
+        while current in cname_chain:
+            if current in visited:
+                req_logger.warning(f"CNAME loop detected: {current}")
+                break
+            visited.add(current)
+            current = cname_chain[current]
+        
+        final_target = current
+        
+        # Rewrite all final records (A/AAAA/etc) to use the original qname
+        modified = False
+        for rrset in final_rrsets:
+            if rrset.name == final_target:
+                # This record points to the final CNAME target
+                # Create new RRset with original qname but keep ALL rdatas
+                new_rrset = dns.rrset.RRset(qname, rrset.rdclass, rrset.rdtype)
+                new_rrset.ttl = rrset.ttl
+                
+                # Copy ALL records (not just the first one)
+                for rdata in rrset:
+                    new_rrset.add(rdata)
+                
+                # Replace the old rrset
+                final_rrsets.remove(rrset)
+                final_rrsets.append(new_rrset)
+                modified = True
+                break
+        
+        if modified:
+            # Remove all CNAME records and replace answer section
+            response.answer.clear()
+            response.answer.extend(final_rrsets)
+            
+            if cname_rrsets:
+                cname_targets = ' -> '.join(str(cname_chain.get(qname, qname)) for _ in range(len(cname_chain)))
+                req_logger.debug(f"CNAME Flattened: Removed {len(cname_rrsets)} CNAME(s), kept {sum(len(r) for r in final_rrsets)} record(s)")
+
+    def minimize_response(self, response: dns.message.Message):
+        if self.config.get('response', {}).get('minimize_response', False):
+            if response.authority or response.additional:
+                response.authority.clear()
+                response.additional.clear()
+
+    def modify_ttls(self, response: dns.message.Message, req_logger):
+        response_cfg = self.config.get('response') or {}
+        min_ttl = response_cfg.get('min_ttl', 0)
+        max_ttl = response_cfg.get('max_ttl', 86400)
+        sync_mode = response_cfg.get('ttl_sync_mode', 'none').lower()
+        
+        target_ttl = None
+        if sync_mode != 'none' and response.answer:
+            ttls = [rrset.ttl for rrset in response.answer]
+            if ttls:
+                if sync_mode == 'first': target_ttl = ttls[0]
+                elif sync_mode == 'last': target_ttl = ttls[-1]
+                elif sync_mode == 'highest': target_ttl = max(ttls)
+                elif sync_mode == 'lowest': target_ttl = min(ttls)
+                elif sync_mode == 'average': target_ttl = int(sum(ttls) / len(ttls))
+                req_logger.debug(f"TTL Sync ({sync_mode}): Input={ttls} -> Target={target_ttl}s")
+
+        for section_name, section in [('Answer', response.answer), ('Auth', response.authority), ('Addl', response.additional)]:
+            for rrset in section:
+                if target_ttl is not None and section_name == 'Answer':
+                    rrset.ttl = int(target_ttl)
+                
+                if rrset.ttl < min_ttl: rrset.ttl = int(min_ttl)
+                elif rrset.ttl > max_ttl: rrset.ttl = int(max_ttl)
+
+    def round_robin_answers(self, response: dns.message.Message, req_logger=None):
+        if not self.round_robin: return
         
         shuffled = False
-        if len(a_records) > 1:
-            random.shuffle(a_records)
-            shuffled = True
-            if logger.isEnabledFor(logging.DEBUG):
-                 new_order = [str(r.rdata) for r in a_records]
-                 logger.debug(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN (A): New Order: {new_order}")
-            
-        if len(aaaa_records) > 1:
-            random.shuffle(aaaa_records)
-            shuffled = True
-            if logger.isEnabledFor(logging.DEBUG):
-                 new_order = [str(r.rdata) for r in aaaa_records]
-                 logger.debug(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN (AAAA): New Order: {new_order}")
-            
-        if shuffled:
-            response.rr = other_records + a_records + aaaa_records
-            
-            shuffled_types = []
-            if len(a_records) > 1: shuffled_types.append("A")
-            if len(aaaa_records) > 1: shuffled_types.append("AAAA")
-            
-            logger.info(f"[ID:{qid}] [IP:{client_ip}] ROUND ROBIN: Shuffled {', '.join(shuffled_types)} records.")
-
-    def log_answer_records(self, response, qid, client_ip):
-        if logger.isEnabledFor(logging.DEBUG):
-             for rr in response.rr:
-                 logger.debug(f"[ID:{qid}] [IP:{client_ip}] ANSWER: {rr.rname} {QTYPE[rr.rtype]} TTL={rr.ttl} DATA={rr.rdata}")
+        for rrset in response.answer:
+            if rrset.rdtype in (dns.rdatatype.A, dns.rdatatype.AAAA):
+                items = list(rrset)
+                if len(items) > 1:
+                    random.shuffle(items)
+                    rrset.clear()
+                    # FIX: Use .add() instead of .extend()
+                    for item in items:
+                        rrset.add(item)
+                    shuffled = True
+        
+        if shuffled and req_logger:
+            req_logger.debug("Round Robin: Shuffled A/AAAA answer records.")
 
     async def process_query(self, data, client_addr, meta=None):
         try:
-            request = DNSRecord.parse(data)
-            qname = str(request.q.qname)
-            qtype = request.q.qtype
-            qid = request.header.id
-            client_ip = client_addr[0]
-            proto_str = (meta.get('proto') or 'udp').upper() if meta else 'UNKNOWN'
-
-            if request.ar:
-                for rr in request.ar:
-                    if rr.rtype == QTYPE.OPT:
-                         try:
-                             options = []
-                             if hasattr(rr.rdata, 'options'):
-                                 options = rr.rdata.options
-                             elif isinstance(rr.rdata, list):
-                                 options = rr.rdata
-
-                             for opt in options:
-                                 if self.use_ecs and opt.code == 8:
-                                     family, src_mask, scope_mask = struct.unpack("!HBB", opt.data[:4])
-                                     addr_data = opt.data[4:]
-                                     
-                                     if family == 1: 
-                                         addr_bytes = addr_data + b'\x00' * (4 - len(addr_data))
-                                         ecs_ip_obj = ipaddress.IPv4Address(addr_bytes)
-                                         client_ip = str(ecs_ip_obj)
-                                     elif family == 2: 
-                                         addr_bytes = addr_data + b'\x00' * (16 - len(addr_data))
-                                         ecs_ip_obj = ipaddress.IPv6Address(addr_bytes)
-                                         client_ip = str(ecs_ip_obj)
-                                     
-                                     if logger.isEnabledFor(logging.DEBUG):
-                                         logger.debug(f"[ID:{qid}] ECS DETECTED: Override Client IP to {client_ip}")
-                                     
-                                     if meta is None: meta = {}
-                                     meta['ecs_ip'] = client_ip
-
-                                 if self.use_edns_mac and opt.code == 65001:
-                                     if len(opt.data) >= 6:
-                                         mac_str = binascii.hexlify(opt.data[:6]).decode('utf-8')
-                                         mac_fmt = ':'.join(mac_str[i:i+2] for i in range(0, 12, 2))
-                                         if logger.isEnabledFor(logging.DEBUG):
-                                             logger.debug(f"[ID:{qid}] EDNS MAC DETECTED: {mac_fmt}")
-                                         if meta is None: meta = {}
-                                         meta['mac_override'] = mac_fmt
-
-                         except Exception as e:
-                             logger.debug(f"[ID:{qid}] Failed to parse EDNS Options: {e}")
-            
-            group = self.identify_client(client_addr, meta)
-            policy_name = self.get_active_policy(group)
-            engine = self.rule_engines.get(policy_name)
-
-            cached_record, ttl_remain, hits = self.cache.get(qname, qtype, scope=policy_name)
-            if cached_record:
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] [PROTO:{proto_str}] CACHE HIT [{policy_name}]: {qname} TTL: {int(ttl_remain)}s Hits: {hits}")
-                
-                reply = DNSRecord.parse(cached_record.pack())
-                reply.header.id = qid 
-                
-                if self.prefetch_margin > 0 and ttl_remain < self.prefetch_margin:
-                    if hits >= self.prefetch_min_hits:
-                        logger.info(f"[ID:{qid}] [IP:{client_ip}] PREFETCH INITIATED: {qname}")
-                        async def prefetch_worker():
-                            await self._resolve_upstream(qname, qtype, data, qid, engine, policy_name, request, client_ip)
-                        asyncio.create_task(prefetch_worker())
-
-                self.round_robin_answers(reply, qid, client_ip)
-                self.log_answer_records(reply, qid, client_ip)
-                return reply.pack()
-
-            limit_action = self.rate_limiter.check(client_ip, meta.get('proto', 'udp'))
-            if limit_action == "DROP": 
-                logger.warning(f"[ID:{qid}] [IP:{client_ip}] [PROTO:{proto_str}] RATE LIMIT DROP: {client_ip}")
-                return None
-            if limit_action == "TC":
-                logger.warning(f"[ID:{qid}] [IP:{client_ip}] [PROTO:{proto_str}] RATE LIMIT TC: {client_ip} (UDP Exceeded)")
-                reply = request.reply()
-                reply.header.tc = 1
-                return reply.pack()
-
-            if policy_name == "BLOCK":
-                logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH SCHEDULE BLOCK: {qname} denied by '{group}' schedule.")
-                block_resp = self.create_block_response(request, qname, qtype)
-                self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
-                return block_resp.pack()
-            elif policy_name == "ALLOW":
-                engine = None 
-            
-            logger.info(f"[ID:{qid}] [IP:{client_ip}] [PROTO:{proto_str}] QUERY: {qname} [{QTYPE[qtype]}] Policy: {policy_name}")
-            
-            if self.categorization_enabled and engine and engine.categorizer:
-                 cat_results = engine.categorizer.categorize(qname)
-                 if cat_results:
-                     for cat, score in cat_results.items():
-                         logger.info(f"[ID:{qid}] [IP:{client_ip}] MATCH CATEGORY: {qname} -> {cat} ({score}%)")
-
-            if engine:
-                blocked_type, type_reason, type_list = engine.check_type(qtype)
-                if blocked_type:
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK TYPE: {qname} [{QTYPE[qtype]}] Reason: {type_reason} (List: {type_list})")
-                    reply = request.reply()
-                    reply.header.rcode = self.block_rcode
-                    self.cache.put(reply, scope=policy_name, forced_ttl=60)
-                    return reply.pack()
-
-                action, rule, list_name = engine.is_blocked(qname)
-                if action == "BLOCK":
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN: {qname} Rule: '{rule}' (List: {list_name})")
-                    block_resp = self.create_block_response(request, qname, qtype)
-                    self.cache.put(block_resp, scope=policy_name, forced_ttl=300)
-                    return block_resp.pack()
-                elif action == "ALLOW":
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] ALLOW DOMAIN: {qname} Rule: '{rule}' (List: {list_name})")
-
-            async def resolve_worker():
-                return await self._resolve_upstream(qname, qtype, data, qid, engine, policy_name, request, client_ip)
-
-            final_record = await self.deduplicator.get_or_process(qname, qtype, policy_name, resolve_worker)
-            self.round_robin_answers(final_record, qid, client_ip)
-            final_record.header.id = qid
-            self.log_answer_records(final_record, qid, client_ip)
-            return final_record.pack()
-
+            request = dns.message.from_wire(data)
         except Exception as e:
-            logger.error(f"HANDLER ERROR: {e}", exc_info=True)
+            logger.warning(f"Failed to parse DNS packet from {client_addr}: {e}")
             return None
 
-    async def _resolve_upstream(self, qname, qtype, data, qid, engine, policy_name, request, client_ip="Unknown"):
-        logger.info(f"[ID:{qid}] [IP:{client_ip}] CACHE MISS [{policy_name}]: {qname} - Forwarding...")
-        upstream_data = await self.upstream.forward_query(data, qid=qid, client_ip=client_ip)
-        if not upstream_data:
-            fail_reply = request.reply()
-            fail_reply.header.rcode = RCODE.SERVFAIL
-            return fail_reply
+        if not request.question: return None
+        q = request.question[0]
+        qname = q.name
+        qname_str = str(qname)
+        qtype = q.rdtype
+        qid = request.id
+        client_ip = client_addr[0]
+        if meta is None: meta = {}
 
-        response = DNSRecord.parse(upstream_data)
-        logger.info(f"[ID:{qid}] [IP:{client_ip}] UPSTREAM RESPONSE: {qname} RCODE: {RCODE[response.header.rcode]}")
+        # --- EDNS Parsing ---
+        ecs_ip = None
+        edns_mac = None
         
-        if engine:
-            filtered_rrs = []
-            for rr in response.rr:
-                is_bad = False
-                bad_rule, bad_list = "", ""
-                if rr.rtype in [QTYPE.A, QTYPE.AAAA]: 
-                    is_bad, bad_rule, bad_list = engine.check_answer(None, str(rr.rdata))
-                elif rr.rtype in [QTYPE.CNAME, QTYPE.MX, QTYPE.NS, QTYPE.PTR, QTYPE.SRV]: 
-                    is_bad, bad_rule, bad_list = engine.check_answer(str(rr.rdata), None)
-                
-                if is_bad: 
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN (ANSWER): Filtered {rr.rdata}. Rule: '{bad_rule}' ({bad_list})")
-                    if rr.rtype not in [QTYPE.A, QTYPE.AAAA]:
-                        logger.info(f"[ID:{qid}] [IP:{client_ip}] STRICT BLOCK (ANSWER): Blocked domain in answer. Blocking full response.")
-                        block_resp = self.create_block_response(request, qname, qtype)
-                        self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
-                        return block_resp
-                else: filtered_rrs.append(rr)
-            response.rr = filtered_rrs
-            if not response.rr and request.q.qtype in [QTYPE.A, QTYPE.AAAA]:
-                    logger.info(f"[ID:{qid}] [IP:{client_ip}] BLOCK DOMAIN (ANSWER): All IPs removed. Blocking.")
-                    block_resp = self.create_block_response(request, qname, qtype)
-                    self.cache.put(block_resp, scope=policy_name, forced_ttl=60)
-                    return block_resp
+        for opt in request.options:
+            if isinstance(opt, dns.edns.ECSOption):
+                try: ecs_ip = str(opt.address)
+                except: pass
+                meta['ecs_ip'] = ecs_ip
+            
+            elif isinstance(opt, dns.edns.GenericOption) and opt.otype == 65001:
+                try:
+                    mac_bytes = opt.data
+                    mac_str = ":".join(f"{b:02x}" for b in mac_bytes).upper()
+                    meta['mac_override'] = mac_str
+                    edns_mac = mac_str
+                except: pass
 
-        self.collapse_cnames(response, qid=qid, client_ip=client_ip)
-        self.minimize_response(response, qid=qid, client_ip=client_ip)
-        self.modify_ttls(response, qid=qid, client_ip=client_ip)
-        self.cache.put(response, scope=policy_name)
+        log_ip = ecs_ip if ecs_ip else client_ip
+        log_mac = edns_mac if edns_mac else self.mac_mapper.get_mac(client_ip)
+        
+        ctx = {
+            'id': qid,
+            'ip': f"{log_ip}{' (ECS)' if ecs_ip else ''}",
+            'mac': f"{log_mac or 'Unk'}{' (EDNS)' if edns_mac else ''}",
+            'proto': meta.get('proto', 'udp').upper()
+        }
+        req_logger = ContextAdapter(logger, ctx)
+        req_logger.info(f"QUERY: {qname_str} [{dns.rdatatype.to_text(qtype)}]")
+
+        group = self.identify_client(client_addr, meta, req_logger)
+        group_key = group if group else "default"
+        policy_name = self.get_active_policy(group, req_logger)
+        
+        # --- Cache Check ---
+        cached_msg, ttl_remain, hits = self.cache.get(qname_str, qtype, group=group_key, scope=policy_name)
+        if cached_msg:
+            req_logger.info(f"CACHE HIT [{group_key}/{policy_name}]: TTL={int(ttl_remain)}s")
+            cached_msg.id = qid
+            if self.prefetch_margin > 0 and ttl_remain < self.prefetch_margin and hits >= self.prefetch_min_hits:
+                req_logger.debug(f"Prefetching {qname_str} (Hits: {hits})")
+                asyncio.create_task(self._resolve_upstream(qname_str, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key))
+            self.round_robin_answers(cached_msg, req_logger)
+            return cached_msg.to_wire()
+        else:
+            req_logger.debug(f"CACHE MISS [{group_key}/{policy_name}]: {qname_str}")
+
+        # --- Rate Limit Check ---
+        limit_action = self.rate_limiter.check(log_ip, meta.get('proto', 'udp'))
+        if limit_action == "DROP": 
+            req_logger.warning("Rate Limit Exceeded: Dropping query")
+            return None
+        if limit_action == "TC":
+            req_logger.warning("Rate Limit Exceeded: Forcing TCP")
+            reply = dns.message.make_response(request)
+            reply.flags |= dns.flags.TC
+            return reply.to_wire()
+
+        # --- Policy Check (Phase 1: Domain/Type) ---
+        if policy_name == "BLOCK":
+            req_logger.info("BLOCKED (Schedule Match)")
+            return self.create_block_response(request, qname, qtype).to_wire()
+
+        engine = self.rule_engines.get(policy_name)
+        if engine:
+            # Categorization
+            if self.categorization_enabled and engine.categorizer:
+                 cat_results = engine.categorizer.categorize(qname_str)
+                 for cat, score in cat_results.items():
+                     req_logger.info(f"CATEGORY: '{cat}' (Confidence: {score}%)")
+                     if engine.category_rules and cat in engine.category_rules:
+                         rule = engine.category_rules[cat]
+                         if score >= rule.get('min_confidence', 0):
+                             action = rule.get('action', 'ALLOW')
+                             req_logger.info(f"Action: {action} (Category Match) | Cat: {cat} | Score: {score}")
+                             if action == 'BLOCK':
+                                 return self.create_block_response(request, qname, qtype).to_wire()
+            
+            blocked_type, reason, _ = engine.check_type(qtype)
+            if blocked_type: 
+                req_logger.info(f"BLOCKED (Type): {reason}")
+                return self.create_block_response(request, qname, qtype).to_wire()
+
+            action, rule, list_name = engine.is_blocked(qname_str)
+            if action == "BLOCK":
+                req_logger.info(f"Action: BLOCK | Domain: {qname_str} | Rule: '{rule}' | List: '{list_name}'")
+                return self.create_block_response(request, qname, qtype).to_wire()
+            elif action == "ALLOW":
+                req_logger.info(f"Action: ALLOW | Domain: {qname_str} | Rule: '{rule}' | List: '{list_name}'")
+
+        # --- Upstream Resolution ---
+        dedup_key = (qname_str, qtype, policy_name, group_key)
+        final_msg = await self.deduplicator.get_or_process(dedup_key, 
+            lambda: self._resolve_upstream(qname_str, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key))
+        
+        self.round_robin_answers(final_msg, req_logger)
+        final_msg.id = qid
+        return final_msg.to_wire()
+
+    async def _resolve_upstream(self, qname_str, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default"):
+        upstream_group = "Default"
+        policies = self.config.get('policies') or {}
+        if policy_name in policies:
+             upstream_group = policies[policy_name].get('upstream_group', "Default")
+        
+        # --- Native EDNS Forwarding Logic ---
+        opts_to_keep = []
+        for opt in request.options:
+            if isinstance(opt, dns.edns.ECSOption):
+                 if self.forward_ecs_mode == 'preserve': opts_to_keep.append(opt)
+            elif isinstance(opt, dns.edns.GenericOption) and opt.otype == 65001:
+                 if self.forward_mac_mode == 'preserve': opts_to_keep.append(opt)
+            else:
+                 opts_to_keep.append(opt)
+
+        if self.forward_ecs_mode == 'add':
+             try:
+                ip = ipaddress.ip_address(client_ip)
+                src_len = 32 if ip.version == 4 else 128
+                opts_to_keep.append(dns.edns.ECSOption(ip, src_len))
+                req_logger.debug(f"Added ECS: {client_ip}")
+             except Exception: pass
+
+        if self.forward_mac_mode == 'add':
+            mac = self.mac_mapper.get_mac(client_ip)
+            if mac:
+                try:
+                    mac_bytes = bytes.fromhex(mac.replace(':', '').replace('-', ''))
+                    opts_to_keep.append(dns.edns.GenericOption(65001, mac_bytes))
+                    req_logger.debug(f"Added MAC: {mac}")
+                except Exception: pass
+        
+        # Apply EDNS Options via Helper
+        edns_ver = request.edns if request.edns >= 0 else 0
+        payload = request.payload if request.payload >= 512 else 1232
+        request.use_edns(edns=edns_ver, ednsflags=request.ednsflags, options=opts_to_keep, payload=payload)
+        
+        try:
+            upstream_query_data = request.to_wire()
+        except:
+            upstream_query_data = data
+
+        req_logger.debug(f"Forwarding to Upstream Group: {upstream_group}")
+        upstream_data = await self.upstream.forward_query(upstream_query_data, qid=qid, client_ip=client_ip, upstream_group=upstream_group, req_logger=req_logger)
+        
+        if not upstream_data:
+            req_logger.warning("Upstream Resolution Failed (SERVFAIL or Timeout)")
+            reply = dns.message.make_response(request)
+            reply.set_rcode(dns.rcode.SERVFAIL)
+            return reply
+
+        try:
+            response = dns.message.from_wire(upstream_data)
+        except Exception as e:
+             req_logger.warning(f"Upstream sent invalid DNS data: {e}")
+             reply = dns.message.make_response(request)
+             reply.set_rcode(dns.rcode.SERVFAIL)
+             return reply
+        
+        # --- Policy Check (Phase 2: Answers/IPs) ---
+        if engine and self.match_answers_globally:
+            for section in (response.answer, response.authority, response.additional):
+                safe_rrsets = []
+                for rrset in section:
+                    is_bad = False
+                    if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
+                        for rdata in rrset:
+                             is_bad, rule, lst = engine.check_answer(None, rdata.to_text())
+                             if is_bad: 
+                                 req_logger.info(f"Action: BLOCK (Answer IP) | Target: {rdata.to_text()} | Rule: '{rule}' | List: '{lst}'")
+                                 break
+                    elif rrset.rdtype in [dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.PTR]:
+                        for rdata in rrset:
+                            is_bad, rule, lst = engine.check_answer(str(rdata.target), None)
+                            if is_bad: 
+                                req_logger.info(f"Action: BLOCK (Answer CNAME/Target) | Target: {rdata.target} | Rule: '{rule}' | List: '{lst}'")
+                                break
+                    
+                    if is_bad:
+                         if self.ip_block_mode == 'block':
+                             req_logger.info("Replacing response with BLOCK due to Answer match.")
+                             block_resp = self.create_block_response(request, request.question[0].name, qtype)
+                             return block_resp
+                    else:
+                        safe_rrsets.append(rrset)
+                
+                section.clear()
+                section.extend(safe_rrsets)
+
+        self.collapse_cnames(response, req_logger)
+        self.minimize_response(response)
+        self.modify_ttls(response, req_logger)
+        self.cache.put(response, group=group_key, scope=policy_name, req_logger=req_logger)
         return response
 
