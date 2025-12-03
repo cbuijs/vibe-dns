@@ -139,18 +139,23 @@ upstream:
 
   # Upstream Server Groups. Used for routing specific client policies to different sets of resolvers.
   # Syntax: [protocol://]<host|ip>[:<port>][/path][#<forced_ip>]
-  # Protocols: udp, tcp, tls/dot (DoT), https/doh (DoH)
+  # Protocols: udp, tcp, tls/dot (DoT), https/doh (DoH), h3/doh3 (DoH3).
   groups:
     Default:
       servers:
+        # DNS-over-HTTPS (HTTP/2 or HTTP/1.1)
         - "https://protective.joindns4.eu:443/dns-query#86.54.11.1"
         - "https://protective.joindns4.eu:443/dns-query#86.54.11.201"
         - "https://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:1"
         - "https://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:201"
-        - "tls://protective.joindns4.eu:853#86.54.11.1"
-        - "tls://protective.joindns4.eu:853#86.54.11.201"
-        - "tls://protective.joindns4.eu:853#2a13:1001::86:54:11:1"
-        - "tls://protective.joindns4.eu:853#2a13:1001::86:54:11:201"
+        # DNS-over-TLS
+        - "dot://protective.joindns4.eu:853#86.54.11.1"
+        - "dot://protective.joindns4.eu:853#86.54.11.201"
+        - "dot://protective.joindns4.eu:853#2a13:1001::86:54:11:1"
+        - "dot://protective.joindns4.eu:853#2a13:1001::86:54:11:201"
+        # DNS-over-HTTP/3 (uncomment if you have httpx[http3] and aioquic installed)
+        # - "h3://protective.joindns4.eu:443/dns-query#86.54.11.1"
+        # - "h3://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:1"
     
     Filtered:
       servers:
@@ -158,10 +163,10 @@ upstream:
         - "https://child-noads.joindns4.eu:443/dns-query#86.54.11.211"
         - "https://child-noads.joindns4.eu:443/dns-query#2a13:1001::86:54:11:11"
         - "https://child-noads.joindns4.eu:443/dns-query#2a13:1001::86:54:11:211"
-        - "tls://child-noads.joindns4.eu:853#86.54.11.11"
-        - "tls://child-noads.joindns4.eu:853#86.54.11.211"
-        - "tls://child-noads.joindns4.eu:853#2a13:1001::86:54:11:11"
-        - "tls://child-noads.joindns4.eu:853#2a13:1001::86:54:11:211"
+        - "dot://child-noads.joindns4.eu:853#86.54.11.11"
+        - "dot://child-noads.joindns4.eu:853#86.54.11.211"
+        - "dot://child-noads.joindns4.eu:853#2a13:1001::86:54:11:11"
+        - "dot://child-noads.joindns4.eu:853#2a13:1001::86:54:11:211"
       
 # =============================================================================
 # 4. CACHING & PERFORMANCE
@@ -271,7 +276,6 @@ groups:
   #   - <ip_address>        Match by client IP
   #   - <cidr_range>        Match by IP subnet
   kids_devices:
-    # FIXED: Removed trailing whitespace from MAC addresses
     - "48:db:50:38:8a:94"
     - "4c:8d:79:d5:b3:04"
     - "a0:ce:c8:e9:3f:29"
@@ -283,6 +287,13 @@ groups:
 
   guest_network:
     - "172.16.1.0/24"
+
+# Inline groups and file groups are automatically merged.
+group_files:
+  kids_devices: "./groups/kids_devices.txt"
+  guest_network: "./groups/guest_network.txt"
+  iot_devices: "./groups/iot_devices.txt"
+  refresh_interval: 300  # seconds (5 minutes)
 
 # =============================================================================
 # 9. SCHEDULES
