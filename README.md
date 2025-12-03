@@ -1,6 +1,6 @@
 # vibe-dns (TESTING - USE AT OWN RISK)
 
-My little filtering DNS server in Python vibed together using Google Gemini-3.
+My little filtering DNS server in Python vibed together using Google Gemini and Claude.
 
 This was an excersise to see how things work. Not too bad actually...
 
