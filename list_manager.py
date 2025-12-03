@@ -150,24 +150,31 @@ class ListManager:
             logger.info(f"List '{name}' consolidated: {len(rules)} unique rules.")
 
     def _is_valid_domain(self, domain: str) -> bool:
-        """Validate basic domain format"""
+        """Validate basic domain format, including single-label domains (localhost, TLDs)"""
         if not domain or len(domain) > 253:
             return False
         # Check for invalid characters
         if any(c in domain for c in [' ', '\t', '\n', '\r', '|', '\\', '/']):
             return False
-        # Basic label validation
+        
+        # Split into labels
         labels = domain.split('.')
-        if len(labels) < 2:  # Must have at least two parts
+        
+        # Allow single-label domains (localhost, router, TLDs like 'com')
+        if len(labels) < 1:
             return False
+        
+        # Validate each label
         for label in labels:
             if not label or len(label) > 63:
                 return False
             if label.startswith('-') or label.endswith('-'):
                 return False
-            # Check for valid characters (alphanumeric and hyphen)
-            if not all(c.isalnum() or c == '-' for c in label):
+            # Check for valid characters (alphanumeric, hyphen, and optionally underscore)
+            # Note: Underscores are technically not valid in hostnames but are common in DNS records like _dmarc
+            if not all(c.isalnum() or c in ('-', '_') for c in label):
                 return False
+        
         return True
 
     def _parse_content(self, text, hosts_domain_type='exact'):

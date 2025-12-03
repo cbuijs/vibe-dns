@@ -328,10 +328,12 @@ lists:
       hosts_domain_type: "inclusive"
   
   custom_block:
-    - "block.list"
+    - source: "block.list"
+      hosts_domain_type: "inclusive"
 
   custom_allow:
-    - "allow.list"
+    - source: "allow.list"
+      hosts_domain_type: "exact"
 
 # =============================================================================
 # 12. POLICIES

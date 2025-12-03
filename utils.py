@@ -126,9 +126,21 @@ def get_server_ips(config):
     """
     Get list of IPs to bind to based on config.
     Supports both explicit bind_ip and bind_interfaces.
+    Filters out link-local addresses (169.254.x.x and fe80::).
     """
+    logger = get_logger("Utils")
     server_cfg = config.get('server', {})
     ips = []
+    
+    def is_link_local(ip_str):
+        """Check if IP is link-local (should not bind to these)"""
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            # IPv4 link-local: 169.254.0.0/16
+            # IPv6 link-local: fe80::/10
+            return ip.is_link_local
+        except Exception:
+            return False
     
     # Explicit IP addresses
     if 'bind_ip' in server_cfg:
@@ -137,6 +149,7 @@ def get_server_ips(config):
             ips.append(bind_ips)
         elif isinstance(bind_ips, list):
             ips.extend(bind_ips)
+        logger.debug(f"Using explicit bind_ip: {ips}")
     
     # Interface names (resolve to IPs)
     if 'bind_interfaces' in server_cfg:
@@ -144,33 +157,146 @@ def get_server_ips(config):
         if isinstance(interfaces, str):
             interfaces = [interfaces]
         
-        for iface in interfaces:
-            try:
-                import netifaces
-                addrs = netifaces.ifaddresses(iface)
+        logger.debug(f"Resolving interfaces: {interfaces}")
+        
+        try:
+            import netifaces
+            logger.debug("Using netifaces for interface resolution")
+            
+            for iface in interfaces:
+                try:
+                    addrs = netifaces.ifaddresses(iface)
+                    
+                    # IPv4
+                    if netifaces.AF_INET in addrs:
+                        for addr_info in addrs[netifaces.AF_INET]:
+                            if 'addr' in addr_info:
+                                ip = addr_info['addr']
+                                if is_link_local(ip):
+                                    logger.debug(f"Skipping link-local address on {iface}: {ip}")
+                                    continue
+                                ips.append(ip)
+                                logger.debug(f"Interface {iface} IPv4: {ip}")
+                    
+                    # IPv6
+                    if netifaces.AF_INET6 in addrs:
+                        for addr_info in addrs[netifaces.AF_INET6]:
+                            if 'addr' in addr_info:
+                                # Remove scope ID if present
+                                ip6 = addr_info['addr'].split('%')[0]
+                                if is_link_local(ip6):
+                                    logger.debug(f"Skipping link-local address on {iface}: {ip6}")
+                                    continue
+                                ips.append(ip6)
+                                logger.debug(f"Interface {iface} IPv6: {ip6}")
                 
-                # IPv4
-                if netifaces.AF_INET in addrs:
-                    for addr_info in addrs[netifaces.AF_INET]:
-                        if 'addr' in addr_info:
-                            ips.append(addr_info['addr'])
-                
-                # IPv6
-                if netifaces.AF_INET6 in addrs:
-                    for addr_info in addrs[netifaces.AF_INET6]:
-                        if 'addr' in addr_info:
-                            # Remove scope ID if present
-                            ip6 = addr_info['addr'].split('%')[0]
-                            ips.append(ip6)
-            except ImportError:
-                # Fallback if netifaces not available
-                logger = get_logger("Utils")
-                logger.warning(f"netifaces not installed, cannot resolve interface {iface}")
-            except Exception as e:
-                logger = get_logger("Utils")
-                logger.warning(f"Failed to get IPs for interface {iface}: {e}")
+                except ValueError as e:
+                    logger.warning(f"Interface {iface} not found: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to get IPs for interface {iface}: {e}")
+                    
+        except ImportError:
+            # Fallback: try to get IPs using 'ip' command
+            logger.info("netifaces not installed, using system commands as fallback")
+            
+            for iface in interfaces:
+                try:
+                    import subprocess
+                    
+                    # Try 'ip addr show' (Linux)
+                    result = subprocess.run(
+                        ['ip', 'addr', 'show', iface],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    
+                    if result.returncode == 0:
+                        for line in result.stdout.splitlines():
+                            line = line.strip()
+                            
+                            # IPv4: "inet 192.168.1.1/24"
+                            if line.startswith('inet '):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    ip = parts[1].split('/')[0]
+                                    if is_link_local(ip):
+                                        logger.debug(f"Skipping link-local address on {iface}: {ip}")
+                                        continue
+                                    ips.append(ip)
+                                    logger.debug(f"Interface {iface} IPv4: {ip}")
+                            
+                            # IPv6: "inet6 fe80::1/64"
+                            elif line.startswith('inet6 '):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    ip6 = parts[1].split('/')[0]
+                                    if is_link_local(ip6):
+                                        logger.debug(f"Skipping link-local address on {iface}: {ip6}")
+                                        continue
+                                    ips.append(ip6)
+                                    logger.debug(f"Interface {iface} IPv6: {ip6}")
+                    else:
+                        logger.warning(f"Failed to query interface {iface} with 'ip' command")
+                        
+                except FileNotFoundError:
+                    # Try 'ifconfig' (older systems, macOS)
+                    try:
+                        result = subprocess.run(
+                            ['ifconfig', iface],
+                            capture_output=True,
+                            text=True,
+                            timeout=2
+                        )
+                        
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                line = line.strip()
+                                
+                                # IPv4: "inet 192.168.1.1 netmask ..."
+                                if line.startswith('inet '):
+                                    parts = line.split()
+                                    if len(parts) >= 2:
+                                        ip = parts[1]
+                                        if is_link_local(ip):
+                                            logger.debug(f"Skipping link-local address on {iface}: {ip}")
+                                            continue
+                                        ips.append(ip)
+                                        logger.debug(f"Interface {iface} IPv4: {ip}")
+                                
+                                # IPv6: "inet6 fe80::1 prefixlen ..."
+                                elif line.startswith('inet6 '):
+                                    parts = line.split()
+                                    if len(parts) >= 2:
+                                        ip6 = parts[1].split('%')[0]
+                                        if is_link_local(ip6):
+                                            logger.debug(f"Skipping link-local address on {iface}: {ip6}")
+                                            continue
+                                        ips.append(ip6)
+                                        logger.debug(f"Interface {iface} IPv6: {ip6}")
+                        else:
+                            logger.warning(f"Failed to query interface {iface} with 'ifconfig' command")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to get IPs for interface {iface}: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"Error resolving interface {iface}: {e}")
     
-    return list(set(ips))  # Remove duplicates
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_ips = []
+    for ip in ips:
+        if ip not in seen:
+            seen.add(ip)
+            unique_ips.append(ip)
+    
+    if unique_ips:
+        logger.info(f"Resolved {len(unique_ips)} unique IPs for binding: {unique_ips}")
+    else:
+        logger.warning("No IPs resolved - check bind_ip or bind_interfaces configuration")
+    
+    return unique_ips
 
 class MacMapper:
     """

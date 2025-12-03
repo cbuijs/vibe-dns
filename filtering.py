@@ -57,7 +57,7 @@ class DomainTrie:
             node['_end'] = data 
 
     def _is_valid_domain(self, domain: str) -> bool:
-        """Validate basic domain format"""
+        """Validate basic domain format, including single-label domains"""
         if not domain or len(domain) > 253:
             return False
         # Check for invalid characters
@@ -65,10 +65,18 @@ class DomainTrie:
             return False
         # Basic label validation
         labels = domain.split('.')
+        
+        # Allow single-label domains (localhost, router, TLDs)
+        if len(labels) < 1:
+            return False
+            
         for label in labels:
             if not label or len(label) > 63:
                 return False
             if label.startswith('-') or label.endswith('-'):
+                return False
+            # Allow alphanumeric, hyphen, and underscore (for DNS records like _dmarc)
+            if not all(c.isalnum() or c in ('-', '_') for c in label):
                 return False
         return True
 
