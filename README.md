@@ -13,7 +13,7 @@ It's always DNS.
 
 =======
 
-#Features:
+# Features:
 
 **Smart, policy-driven DNS filtering engine**
 The system lets you build tailored DNS behaviour for different users, devices, and networks. You can mix blocking, allow-listing, categorization, and upstream selection per group.
