@@ -2,23 +2,16 @@
 # filename: config_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.0
+# Version: 2.0.0 (Optimized)
 # -----------------------------------------------------------------------------
 """
-Configuration Validation Module.
-
-Provides comprehensive validation for YAML configuration files:
-- IP address and CIDR validation
-- Policy existence checks
-- Circular dependency detection
-- Port range validation
-- Schedule format validation
+Configuration Validation Module - Optimized version using validation utilities.
 """
 
-import ipaddress
 import re
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any
 from utils import get_logger
+from validation import is_valid_ip, is_valid_cidr, is_valid_mac, extract_ip_from_string
 
 logger = get_logger("ConfigValidator")
 
@@ -27,9 +20,7 @@ class ConfigValidationError(Exception):
     pass
 
 class ConfigValidator:
-    """
-    Validates DNS server configuration for common errors and inconsistencies.
-    """
+    """Validates DNS server configuration for common errors and inconsistencies"""
     
     def __init__(self):
         self.errors: List[str] = []
@@ -89,7 +80,7 @@ class ConfigValidator:
                 self.errors.append("server.bind_ip: Must be a string or list")
             else:
                 for ip in bind_ips:
-                    if not self._is_valid_ip(ip):
+                    if not is_valid_ip(ip):
                         self.errors.append(f"server.bind_ip: Invalid IP address '{ip}'")
         
         # Check ports
@@ -155,8 +146,8 @@ class ConfigValidator:
                             self.errors.append(f"upstream.bootstrap: Invalid protocol '{proto}' in '{server}'")
                     
                     # Extract and validate IP
-                    ip_part = self._extract_ip_from_string(server)
-                    if not self._is_valid_ip(ip_part):
+                    ip_part = extract_ip_from_string(server)
+                    if not is_valid_ip(ip_part):
                         self.errors.append(f"upstream.bootstrap: Invalid IP '{ip_part}' in '{server}'")
         
         # Check groups
@@ -256,7 +247,7 @@ class ConfigValidator:
         # Check block_ip
         block_ip = response_cfg.get('block_ip')
         if block_ip and block_ip != 'NULL':
-            if not self._is_valid_ip(block_ip):
+            if not is_valid_ip(block_ip):
                 self.errors.append(f"response.block_ip: Invalid IP address '{block_ip}'")
         
         # Check TTL values
@@ -304,7 +295,7 @@ class ConfigValidator:
                 # Check special identifiers
                 if ident_lower.startswith('server_ip:'):
                     ip = ident_lower[10:]
-                    if not self._is_valid_ip(ip):
+                    if not is_valid_ip(ip):
                         self.errors.append(f"groups.{group_name}: Invalid server_ip '{ip}'")
                 
                 elif ident_lower.startswith('server_port:'):
@@ -317,24 +308,22 @@ class ConfigValidator:
                 
                 elif '/' in ident and not ident.startswith('path:'):
                     # CIDR notation
-                    if not self._is_valid_cidr(ident):
+                    if not is_valid_cidr(ident):
                         self.errors.append(f"groups.{group_name}: Invalid CIDR '{ident}'")
                 
                 elif ':' in ident and len(ident.split(':')) >= 5:
-                    # Could be MAC address (XX:XX:XX:XX:XX:XX) or IPv6
-                    # Try MAC first
-                    if self._is_valid_mac(ident):
+                    # Could be MAC address or IPv6
+                    if is_valid_mac(ident):
                         continue  # Valid MAC
-                    # Try IPv6 (with or without brackets)
-                    elif self._is_valid_ip(ident):
+                    elif is_valid_ip(ident):
                         continue  # Valid IPv6
                     else:
                         self.warnings.append(f"groups.{group_name}: Ambiguous identifier '{ident}' (MAC or IPv6?)")
                 
                 else:
                     # Could be bare IP or other identifier
-                    if self._looks_like_ip(ident):
-                        if not self._is_valid_ip(ident):
+                    if '.' in ident or ':' in ident:
+                        if not is_valid_ip(ident):
                             self.errors.append(f"groups.{group_name}: Invalid IP address '{ident}'")
     
     def _validate_schedules(self, schedules_cfg: Dict[str, Any]):
@@ -491,70 +480,6 @@ class ConfigValidator:
                 
                 elif not isinstance(source, str):
                     self.errors.append(f"lists.{list_name}: Source must be string or dictionary")
-    
-    def _is_valid_ip(self, ip_str: str) -> bool:
-        """Check if string is a valid IP address (handles [IPv6] notation)"""
-        # Strip brackets for IPv6 addresses
-        cleaned = ip_str.strip('[]')
-        try:
-            ipaddress.ip_address(cleaned)
-            return True
-        except ValueError:
-            return False
-    
-    def _is_valid_cidr(self, cidr_str: str) -> bool:
-        """Check if string is valid CIDR notation (handles [IPv6] notation)"""
-        # Strip brackets for IPv6 addresses
-        cleaned = cidr_str.strip('[]')
-        try:
-            ipaddress.ip_network(cleaned, strict=False)
-            return True
-        except ValueError:
-            return False
-    
-    def _looks_like_ip(self, s: str) -> bool:
-        """Check if string looks like an IP address"""
-        # Simple heuristic: contains dots or colons but no slashes
-        return ('.' in s or ':' in s) and '/' not in s
-    
-    def _extract_ip_from_string(self, s: str) -> str:
-        """
-        Extract IP address from various formats:
-        - 8.8.8.8
-        - 8.8.8.8:53
-        - [2001:db8::1]
-        - [2001:db8::1]:53
-        - udp://8.8.8.8:53
-        - udp://[2001:db8::1]:53
-        """
-        # Remove protocol if present
-        if '://' in s:
-            s = s.split('://', 1)[1]
-        
-        # Handle [IPv6]:port format
-        if s.startswith('['):
-            bracket_end = s.find(']')
-            if bracket_end > 0:
-                return s[1:bracket_end]
-            return s[1:]  # Malformed but try anyway
-        
-        # Handle IPv4:port or bare IPv4
-        if '.' in s:
-            return s.split(':')[0]
-        
-        # Bare IPv6 (might have port at the end)
-        # IPv6 has multiple colons, port has one
-        if s.count(':') > 1:
-            return s  # Likely bare IPv6
-        
-        # Fallback: take everything before last colon (port)
-        return s.rsplit(':', 1)[0]
-    
-    def _is_valid_mac(self, mac_str: str) -> bool:
-        """Check if string looks like a MAC address"""
-        # Pattern: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
-        pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
-        return bool(pattern.match(mac_str))
 
 
 def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:

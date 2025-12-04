@@ -2,7 +2,7 @@
 # filename: list_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 3.5.2 (Bug Fixes)
+# Version: 3.5.2 (Bug Fixes) + OPTIMIZED
 # -----------------------------------------------------------------------------
 """
 List Management Module.
@@ -11,6 +11,7 @@ Updates:
 - Added domain format validation
 - Improved error handling
 - Better logging for invalid entries
+- OPTIMIZED: Uses validation module instead of duplicate _is_valid_domain
 """
 
 import os
@@ -19,6 +20,7 @@ import hashlib
 import ipaddress
 import urllib.request
 from utils import get_logger
+from validation import is_valid_domain
 
 logger = get_logger("ListManager")
 
@@ -149,34 +151,6 @@ class ListManager:
             self.lists_data[name] = rules
             logger.info(f"List '{name}' consolidated: {len(rules)} unique rules.")
 
-    def _is_valid_domain(self, domain: str) -> bool:
-        """Validate basic domain format, including single-label domains (localhost, TLDs)"""
-        if not domain or len(domain) > 253:
-            return False
-        # Check for invalid characters
-        if any(c in domain for c in [' ', '\t', '\n', '\r', '|', '\\', '/']):
-            return False
-        
-        # Split into labels
-        labels = domain.split('.')
-        
-        # Allow single-label domains (localhost, router, TLDs like 'com')
-        if len(labels) < 1:
-            return False
-        
-        # Validate each label
-        for label in labels:
-            if not label or len(label) > 63:
-                return False
-            if label.startswith('-') or label.endswith('-'):
-                return False
-            # Check for valid characters (alphanumeric, hyphen, and optionally underscore)
-            # Note: Underscores are technically not valid in hostnames but are common in DNS records like _dmarc
-            if not all(c.isalnum() or c in ('-', '_') for c in label):
-                return False
-        
-        return True
-
     def _parse_content(self, text, hosts_domain_type='exact'):
         valid_rules = set()
         invalid_count = 0
@@ -227,8 +201,8 @@ class ListManager:
                 except ValueError:
                     pass  # Not an IP, continue processing
                 
-                # Validate domain format
-                if not self._is_valid_domain(domain):
+                # Validate domain format - OPTIMIZED: Uses validation module
+                if not is_valid_domain(domain, allow_underscores=False):
                     invalid_count += 1
                     if invalid_count <= 10:  # Log first 10 invalid entries
                         logger.debug(f"Invalid domain on line {line_num}: {domain}")

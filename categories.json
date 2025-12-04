@@ -31,13 +31,12 @@
       "mollie", "money", "morganstanley", "mutual", "netbank", "nn", "pay", 
       "payment", "paypal", "pwc", "rabobank", "revolut", "santander", "saxo", 
       "schwab", "stock", "stripe", "trade", "trading", "ubs", "ventures", 
-      "visa", "wallet", "wealth", "wellsfargo", "wise", "wolterskluwer", 
+      "visa", "wallet", "wealth", "wellsfargo", "wire", "wise", "wolterskluwer", 
       "zurich"
     ],
     "regex": [
       "/(^|\\.)bank-[a-z]+\\./",
-      "/(^|\\.)secure-banking-[0-9]+\\./",
-      "/(^|\\.)login-bank-[a-z]+\\./"
+      "/(^|\\.)[a-z\\-]+bank./",
     ],
     "tlds": [
       "abnamro", "allfinanz", "americanexpress", "amex", "axa", "bananarepublic", 

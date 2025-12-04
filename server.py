@@ -2,7 +2,7 @@
 # filename: server.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 4.1.0 (Decision Cache)
+# Version: 4.1.0 (Decision Cache) + OPTIMIZED
 # -----------------------------------------------------------------------------
 """
 Main Server Module.
@@ -10,6 +10,7 @@ Main Server Module.
 Updates:
 - Added decision cache statistics logging
 - Integrated with DecisionCache for performance monitoring
+- OPTIMIZED: Uses defaults module for configuration merging
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from resolver import DNSHandler, DNSCache
 from utils import setup_logger, MacMapper, get_server_ips, get_logger, GroupFileLoader, merge_groups
 from startup import perform_startup_checks
 from config_validator import validate_config
+from defaults import merge_with_defaults
 
 # Initialize Module Logger
 logger = get_logger("Server")
@@ -126,6 +128,11 @@ async def main() -> None:
             with open(args.config, 'r') as f:
                 config = yaml.safe_load(f) or {}
             logger.info(f"Loaded configuration from {args.config}")
+            
+            # OPTIMIZED: Merge with defaults
+            config = merge_with_defaults(config)
+            logger.debug("Applied default configuration values")
+            
         except Exception as e:
             print(f"FATAL: Error loading config file: {e}")
             sys.exit(1)
@@ -177,16 +184,10 @@ async def main() -> None:
             print("No warnings found")
         sys.exit(0)
 
-    # 3. Defaults
-    config.setdefault('upstream', {})
-    config.setdefault('cache', {'size': 10000})
-    config.setdefault('lists', {})
-    config.setdefault('policies', {})
-    
-    server_cfg = config.setdefault('server', {})
-    if not server_cfg.get('bind_ip') and not server_cfg.get('bind_interfaces'):
+    # 3. Check bind configuration
+    if not config.get('server', {}).get('bind_ip') and not config.get('server', {}).get('bind_interfaces'):
         logger.info("No explicit bind_ip configured. Defaulting to ALL interfaces")
-        server_cfg['bind_ip'] = ["0.0.0.0", "::"]
+        config.setdefault('server', {})['bind_ip'] = ["0.0.0.0", "::"]
 
     # 4. Setup Logging
     setup_logger(config)
@@ -348,14 +349,12 @@ async def main() -> None:
     
     monitor_task.cancel()
     
-    if sys.version_info >= (3, 11):
-        try:
-            async with asyncio.TaskGroup() as tg:
-                for s in servers:
-                    s.close()
-                    tg.create_task(s.wait_closed())
-        except Exception: pass
-    else:
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for s in servers:
+                s.close()
+                tg.create_task(s.wait_closed())
+    except (AttributeError, Exception):
         for s in servers:
             s.close()
             await s.wait_closed()
@@ -371,5 +370,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-
 
