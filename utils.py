@@ -2,15 +2,17 @@
 # filename: utils.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 4.0.0 (Enhanced Logging + Group File Loading)
+# Version: 4.1.0 (Multi-Platform MAC Resolution + IPv6 Support)
 # -----------------------------------------------------------------------------
 """
 Utility functions and classes.
 
 Updates:
-- Enhanced MAC cache with detailed logging
-- Group file loading with auto-refresh
-- Better ARP table initialization logging
+- Multi-platform MAC address resolution (Linux, Windows, macOS)
+- IPv6 neighbor discovery support via 'ip neigh'
+- Improved MAC parsing and validation
+- Platform-specific command handling
+- Better error handling and logging
 """
 
 import logging
@@ -300,7 +302,8 @@ def get_server_ips(config):
 
 class MacMapper:
     """
-    Maps IP addresses to MAC addresses using ARP table.
+    Maps IP addresses to MAC addresses using system neighbor table.
+    Supports multiple platforms (Linux, Windows, macOS) and both IPv4 and IPv6.
     Includes enhanced logging and periodic refresh.
     """
     def __init__(self, refresh_interval=300):
@@ -308,6 +311,8 @@ class MacMapper:
         self.refresh_interval = refresh_interval
         self.last_refresh = 0
         self.logger = get_logger("MacMapper")
+        self.platform = self._detect_platform()
+        self.ipv6_supported = False
         
         # Initial load with logging
         self._refresh_cache()
@@ -315,56 +320,244 @@ class MacMapper:
         # Start background refresh task
         asyncio.create_task(self._refresh_loop())
     
-    def _refresh_cache(self):
-        """Refresh MAC cache from system ARP table."""
-        start_time = time.time()
+    def _detect_platform(self):
+        """Detect the operating system platform"""
+        import platform
+        system = platform.system().lower()
+        
+        if system == 'linux':
+            return 'linux'
+        elif system == 'darwin':
+            return 'macos'
+        elif system == 'windows':
+            return 'windows'
+        else:
+            self.logger.warning(f"Unknown platform '{system}', defaulting to linux")
+            return 'linux'
+    
+    def _parse_mac(self, mac_str):
+        """Parse and validate MAC address, normalizing format"""
+        if not mac_str:
+            return None
+        
+        # Remove common separators and convert to uppercase
+        clean = mac_str.upper().replace(':', '').replace('-', '').replace('.', '')
+        
+        # Must be exactly 12 hex characters
+        if len(clean) != 12:
+            return None
+        
+        # Validate hex
+        try:
+            int(clean, 16)
+        except ValueError:
+            return None
+        
+        # Return in colon-separated format
+        return ':'.join(clean[i:i+2] for i in range(0, 12, 2))
+    
+    def _parse_linux_ip_neigh(self, output):
+        """Parse 'ip neigh show' output (Linux)"""
+        new_cache = {}
+        ipv6_count = 0
+        
+        for line in output.splitlines():
+            # Format: 192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+            # Format: fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:ff router REACHABLE
+            parts = line.split()
+            
+            if len(parts) < 4:
+                continue
+            
+            try:
+                ip = parts[0]
+                
+                # Find 'lladdr' keyword and get MAC from next position
+                if 'lladdr' in parts:
+                    idx = parts.index('lladdr')
+                    if idx + 1 < len(parts):
+                        mac = self._parse_mac(parts[idx + 1])
+                        if mac:
+                            # Check if IPv6
+                            try:
+                                ip_obj = ipaddress.ip_address(ip)
+                                if ip_obj.version == 6:
+                                    ipv6_count += 1
+                                    self.ipv6_supported = True
+                            except ValueError:
+                                continue
+                            
+                            new_cache[ip] = mac
+            except (ValueError, IndexError):
+                continue
+        
+        if ipv6_count > 0:
+            self.logger.debug(f"Found {ipv6_count} IPv6 neighbors")
+        
+        return new_cache
+    
+    def _parse_linux_arp(self, output):
+        """Parse 'arp -an' output (Linux fallback)"""
         new_cache = {}
         
-        try:
-            # Try Linux/Unix arp command
-            result = subprocess.run(
-                ['arp', '-an'],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
+        for line in output.splitlines():
+            # Format: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff [ether] on eth0
+            parts = line.split()
             
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        # Format: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff [ether] on eth0
-                        try:
-                            ip = parts[1].strip('()')
-                            mac = parts[3].upper()
-                            
-                            # Validate MAC format
-                            if ':' in mac and len(mac.replace(':', '')) == 12:
-                                new_cache[ip] = mac
-                        except Exception:
-                            continue
-        except FileNotFoundError:
-            # Try ip neigh (newer systems)
+            if len(parts) < 4:
+                continue
+            
             try:
+                # IP is in parentheses at position 1
+                ip = parts[1].strip('()')
+                
+                # MAC is at position 3 (after 'at')
+                if parts[2] == 'at':
+                    mac = self._parse_mac(parts[3])
+                    if mac:
+                        new_cache[ip] = mac
+            except (ValueError, IndexError):
+                continue
+        
+        return new_cache
+    
+    def _parse_macos_arp(self, output):
+        """Parse 'arp -na' output (macOS)"""
+        new_cache = {}
+        
+        for line in output.splitlines():
+            # Format: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
+            parts = line.split()
+            
+            if len(parts) < 4:
+                continue
+            
+            try:
+                # IP is in parentheses at position 1
+                ip = parts[1].strip('()')
+                
+                # MAC is at position 3 (after 'at')
+                if parts[2] == 'at':
+                    mac = self._parse_mac(parts[3])
+                    if mac:
+                        new_cache[ip] = mac
+            except (ValueError, IndexError):
+                continue
+        
+        return new_cache
+    
+    def _parse_windows_arp(self, output):
+        """Parse 'arp -a' output (Windows)"""
+        new_cache = {}
+        
+        for line in output.splitlines():
+            # Format:   192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic
+            line = line.strip()
+            
+            if not line or 'Interface:' in line or 'Internet Address' in line:
+                continue
+            
+            parts = line.split()
+            
+            if len(parts) < 2:
+                continue
+            
+            try:
+                ip = parts[0]
+                mac = self._parse_mac(parts[1])
+                
+                if mac:
+                    # Validate IP
+                    ipaddress.ip_address(ip)
+                    new_cache[ip] = mac
+            except (ValueError, IndexError):
+                continue
+        
+        return new_cache
+    
+    def _refresh_cache(self):
+        """Refresh MAC cache from system neighbor table"""
+        start_time = time.time()
+        new_cache = {}
+        method_used = "unknown"
+        
+        try:
+            if self.platform == 'linux':
+                # Try 'ip neigh show' first (supports IPv6)
+                try:
+                    result = subprocess.run(
+                        ['ip', 'neigh', 'show'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    
+                    if result.returncode == 0:
+                        new_cache = self._parse_linux_ip_neigh(result.stdout)
+                        method_used = "ip neigh"
+                    else:
+                        raise FileNotFoundError()
+                
+                except FileNotFoundError:
+                    # Fallback to 'arp -an' (IPv4 only)
+                    self.logger.debug("'ip neigh' not available, falling back to 'arp'")
+                    result = subprocess.run(
+                        ['arp', '-an'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    
+                    if result.returncode == 0:
+                        new_cache = self._parse_linux_arp(result.stdout)
+                        method_used = "arp (IPv4 only)"
+                        
+                        if not self.ipv6_supported:
+                            self.logger.info("IPv6 neighbor discovery not available (install 'iproute2' for IPv6 support)")
+                            self.ipv6_supported = None  # Mark as checked
+            
+            elif self.platform == 'macos':
+                # macOS uses 'arp -na' (IPv4 only)
                 result = subprocess.run(
-                    ['ip', 'neigh', 'show'],
+                    ['arp', '-na'],
                     capture_output=True,
                     text=True,
                     timeout=2
                 )
                 
                 if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        parts = line.split()
-                        if len(parts) >= 5 and parts[2] == 'lladdr':
-                            ip = parts[0]
-                            mac = parts[4].upper()
-                            if ':' in mac and len(mac.replace(':', '')) == 12:
-                                new_cache[ip] = mac
-            except Exception as e:
-                self.logger.warning(f"Failed to read ARP table via 'ip neigh': {e}")
+                    new_cache = self._parse_macos_arp(result.stdout)
+                    method_used = "arp -na (IPv4 only)"
+                    
+                    if not self.ipv6_supported:
+                        self.logger.info("IPv6 neighbor discovery not available on macOS via arp command")
+                        self.ipv6_supported = None
+                
+                # TODO: Could also try 'ndp -an' for IPv6 on macOS
+            
+            elif self.platform == 'windows':
+                # Windows uses 'arp -a' (IPv4 only)
+                result = subprocess.run(
+                    ['arp', '-a'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                
+                if result.returncode == 0:
+                    new_cache = self._parse_windows_arp(result.stdout)
+                    method_used = "arp -a (IPv4 only)"
+                    
+                    if not self.ipv6_supported:
+                        self.logger.info("IPv6 neighbor discovery not available on Windows via arp command (use 'netsh' for IPv6)")
+                        self.ipv6_supported = None
+        
+        except FileNotFoundError as e:
+            self.logger.error(f"ARP command not found on {self.platform}: {e}")
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"ARP command timed out on {self.platform}")
         except Exception as e:
-            self.logger.warning(f"Failed to read ARP table: {e}")
+            self.logger.error(f"Failed to refresh MAC cache: {e}")
         
         # Calculate changes
         added = set(new_cache.keys()) - set(self.cache.keys())
@@ -374,15 +567,31 @@ class MacMapper:
         duration = time.time() - start_time
         
         # Update cache
+        old_cache = self.cache
         self.cache = new_cache
         self.last_refresh = time.time()
         
         # Log summary
         if not self.cache:
-            self.logger.warning("MAC cache is empty - ARP table may be unavailable")
+            self.logger.warning(f"MAC cache is empty - neighbor table may be unavailable ({method_used})")
         else:
+            # Count IPv4 vs IPv6
+            ipv4_count = 0
+            ipv6_count = 0
+            for ip in self.cache:
+                try:
+                    ip_obj = ipaddress.ip_address(ip)
+                    if ip_obj.version == 4:
+                        ipv4_count += 1
+                    else:
+                        ipv6_count += 1
+                except ValueError:
+                    pass
+            
+            version_info = f"IPv4: {ipv4_count}, IPv6: {ipv6_count}" if ipv6_count > 0 else f"IPv4: {ipv4_count}"
+            
             self.logger.info(
-                f"MAC cache refreshed: {len(self.cache)} entries "
+                f"MAC cache refreshed via '{method_used}': {len(self.cache)} entries ({version_info}) "
                 f"(+{len(added)}, -{len(removed)}, ~{len(updated)}) "
                 f"in {duration:.3f}s"
             )
@@ -392,18 +601,18 @@ class MacMapper:
                 for ip in added:
                     self.logger.debug(f"MAC Added: {ip} -> {new_cache[ip]}")
                 for ip in removed:
-                    self.logger.debug(f"MAC Removed: {ip} -> {self.cache.get(ip, 'Unknown')}")
+                    self.logger.debug(f"MAC Removed: {ip} -> {old_cache.get(ip, 'Unknown')}")
                 for ip in updated:
-                    self.logger.debug(f"MAC Updated: {ip} -> {self.cache.get(ip)} to {new_cache[ip]}")
+                    self.logger.debug(f"MAC Updated: {ip} -> {old_cache.get(ip)} to {new_cache[ip]}")
     
     async def _refresh_loop(self):
-        """Background task to periodically refresh cache."""
+        """Background task to periodically refresh cache"""
         while True:
             await asyncio.sleep(self.refresh_interval)
             self._refresh_cache()
     
     def get_mac(self, ip):
-        """Get MAC address for an IP."""
+        """Get MAC address for an IP (IPv4 or IPv6)"""
         # Refresh if cache is stale (for on-demand updates)
         if time.time() - self.last_refresh > self.refresh_interval:
             self._refresh_cache()

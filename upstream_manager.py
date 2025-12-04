@@ -433,8 +433,11 @@ class UpstreamManager:
 
     async def start_monitor(self):
         if self.mode == "none": 
+            logger.info(f"Monitoring mode: '{self.mode}' - Latency monitoring disabled")
             return
-        logger.info("Starting Upstream Latency Monitor...")
+            
+        logger.info(f"Monitoring mode: '{self.mode}' - Starting Upstream Latency Monitor")
+        logger.info(f"Monitor settings: interval={self.monitor_interval}s, on_query={self.monitor_on_query}, test_domain={self.test_domain}")
         
         expanded_servers = []
         resolved_hosts = {} 
@@ -504,12 +507,17 @@ class UpstreamManager:
         logger.info("Running initial latency check...")
         await self.check_latencies()
         
-        # If monitor_on_query is False, run periodic checks
+        # Log results of initial check
+        await self._log_server_status()
+        
+        # Start monitoring based on mode
         if not self.monitor_on_query:
             logger.info(f"Starting periodic latency checks every {self.monitor_interval}s")
             while True:
                 await asyncio.sleep(self.monitor_interval)
+                logger.debug(f"Periodic check triggered (mode: {self.mode})")
                 await self.check_latencies()
+                await self._log_server_status()
         else:
             logger.info(f"Query-triggered monitoring enabled (checks every {self.monitor_interval}s on demand)")
             # Just wait forever - checks will be triggered by queries
@@ -522,6 +530,7 @@ class UpstreamManager:
         2. By the first query after the interval expires if monitor_on_query is True
         """
         if self.mode == "none": 
+            logger.debug("Latency check skipped (mode: none)")
             return
         
         # Double-check we should actually run (prevent race conditions)
@@ -536,14 +545,17 @@ class UpstreamManager:
             
             # Update the timestamp
             self.last_monitor_time = current_time
-            logger.debug(f"Running latency check (last check was {time_since_last:.1f}s ago)")
+            logger.info(f"Running latency check (mode: {self.mode}, last check: {time_since_last:.1f}s ago)")
         
         valid_targets = []
         async with self._servers_lock:
              valid_targets = [s for s in self.servers if s.get('ip')]
         
-        if not valid_targets: 
+        if not valid_targets:
+            logger.warning("No valid upstream targets available for latency check")
             return
+        
+        logger.debug(f"Checking latency for {len(valid_targets)} servers...")
 
         tasks = []
         if sys.version_info >= (3, 11):
@@ -557,6 +569,10 @@ class UpstreamManager:
             tasks = [asyncio.create_task(self._measure_latency(s)) for s in valid_targets]
             await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Collect results
+        successful_checks = 0
+        failed_checks = 0
+        
         async with self._stats_lock:
             active_ids = set()
             
@@ -567,8 +583,12 @@ class UpstreamManager:
                          res = task.result()
                          if not isinstance(res, Exception):
                              lat = res
-                 except Exception: 
-                     pass
+                             if lat < 999.0:
+                                 successful_checks += 1
+                             else:
+                                 failed_checks += 1
+                 except Exception:
+                     failed_checks += 1
 
                  srv = valid_targets[i]
                  srv['latency'] = lat
@@ -587,16 +607,135 @@ class UpstreamManager:
             for sid in stale_ids:
                 del self.lb_stats[sid]
 
+        logger.info(f"Latency check complete: {successful_checks} OK, {failed_checks} failed")
+        
+        # Sort servers based on mode
         snapshot_stats = {}
         async with self._stats_lock:
              for sid, data in self.lb_stats.items():
                  snapshot_stats[sid] = data.get('avg', 999.0)
         
         async with self._servers_lock:
+            # Capture state before sorting
+            before_top3 = [
+                (s['id'], s['proto'].upper(), s['latency'], snapshot_stats.get(s['id'], 999.0))
+                for s in self.servers[:3]
+            ]
+            
             if self.mode in ['fastest', 'failover']:
                 self.servers.sort(key=lambda x: x['latency'])
+                logger.debug(f"Servers sorted by current latency (mode: {self.mode})")
             elif self.mode == 'loadbalance': 
                 self.servers.sort(key=lambda x: snapshot_stats.get(x['id'], 999.0))
+                logger.debug(f"Servers sorted by average latency (mode: {self.mode})")
+            elif self.mode == 'sticky':
+                # Keep order for sticky, but update latencies for failover
+                logger.debug(f"Server order maintained (mode: {self.mode})")
+            elif self.mode in ['random', 'roundrobin']:
+                # No sorting needed
+                logger.debug(f"Server order unchanged (mode: {self.mode})")
+            else:
+                logger.warning(f"Unknown monitoring mode: {self.mode}")
+            
+            # Capture state after sorting
+            after_top3 = [
+                (s['id'], s['proto'].upper(), s['latency'], snapshot_stats.get(s['id'], 999.0))
+                for s in self.servers[:3]
+            ]
+            
+            # Check if top 3 changed (this is what matters for selection)
+            top3_changed = (before_top3 != after_top3)
+            
+            if top3_changed:
+                logger.info("=" * 80)
+                logger.info(f"UPSTREAM SELECTION CHANGED (mode: {self.mode})")
+                logger.info("=" * 80)
+                
+                # Show what was used before
+                logger.info("Previously selected (top 3):")
+                for i, (sid, proto, cur_lat, avg_lat) in enumerate(before_top3, 1):
+                    cur_str = f"{cur_lat*1000:.1f}ms" if cur_lat < 999.0 else "PENDING"
+                    avg_str = f"{avg_lat*1000:.1f}ms" if avg_lat < 999.0 else "PENDING"
+                    logger.info(f"  #{i}: [{proto:6s}] {sid:50s} | Cur: {cur_str:9s} | Avg: {avg_str:9s}")
+                
+                logger.info("-" * 80)
+                
+                # Show ALL servers sorted by current selection criteria
+                logger.info(f"All servers sorted by {self.mode} criteria:")
+                
+                for i, s in enumerate(self.servers, 1):
+                    proto = s['proto'].upper()
+                    sid = s['id']
+                    cur_lat = s['latency']
+                    avg_lat = snapshot_stats.get(sid, 999.0)
+                    
+                    cur_str = f"{cur_lat*1000:.1f}ms" if cur_lat < 999.0 else "PENDING"
+                    avg_str = f"{avg_lat*1000:.1f}ms" if avg_lat < 999.0 else "PENDING"
+                    
+                    # Mark top 3 that will be used
+                    marker = ">>> NOW USING" if i <= 3 else "   "
+                    
+                    logger.info(
+                        f"  {marker} #{i:2d}: [{proto:6s}] {sid:50s} | "
+                        f"Cur: {cur_str:9s} | Avg: {avg_str:9s}"
+                    )
+                
+                logger.info("=" * 80)
+            else:
+                logger.debug(f"Top 3 servers unchanged after latency check")
+
+    async def _log_server_status(self):
+        """Log current server status and ordering."""
+        async with self._servers_lock:
+            # Group by protocol for summary
+            proto_summary = {}
+            for s in self.servers:
+                proto = s['proto'].upper()
+                if proto not in proto_summary:
+                    proto_summary[proto] = {'count': 0, 'working': 0, 'avg_latency': []}
+                proto_summary[proto]['count'] += 1
+                if s['latency'] < 999.0:
+                    proto_summary[proto]['working'] += 1
+                    proto_summary[proto]['avg_latency'].append(s['latency'])
+            
+            logger.info(f"Protocol summary ({len(self.servers)} total servers):")
+            for proto, stats in sorted(proto_summary.items()):
+                if stats['avg_latency']:
+                    avg = sum(stats['avg_latency']) / len(stats['avg_latency'])
+                    logger.info(f"  {proto}: {stats['working']}/{stats['count']} working (avg: {avg*1000:.1f}ms)")
+                else:
+                    logger.info(f"  {proto}: {stats['working']}/{stats['count']} working (all failed)")
+            
+            # Show all servers if they're mostly untested (first run)
+            # or top 10 if we have latency data
+            working_count = sum(1 for s in self.servers if s['latency'] < 999.0)
+            if working_count < len(self.servers) * 0.3:  # Less than 30% working = likely startup
+                display_count = len(self.servers)
+                logger.info(f"Showing all {display_count} servers (initial state):")
+            else:
+                display_count = min(10, len(self.servers))
+                logger.info(f"Top {display_count} servers (mode: {self.mode}):")
+            
+            for i, s in enumerate(self.servers[:display_count], 1):
+                proto = s['proto'].upper()
+                if proto in ('HTTPS', 'H3'):
+                    display = f"{s['host']}:{s['port']}{s['path']}"
+                else:
+                    display = f"{s['host']}:{s['port']}"
+                
+                # Get stats
+                avg_lat = "N/A"
+                async with self._stats_lock:
+                    if s['id'] in self.lb_stats:
+                        avg = self.lb_stats[s['id']]['avg']
+                        avg_lat = f"{avg*1000:.1f}ms" if avg < 999.0 else "PENDING"
+                
+                current = f"{s['latency']*1000:.1f}ms" if s['latency'] < 999.0 else "PENDING"
+                
+                logger.info(
+                    f"  #{i:2d}: [{proto:6s}] {display:40s} ({s['ip']:20s}) | "
+                    f"Cur: {current:8s} | Avg: {avg_lat:8s}"
+                )
 
     async def _measure_latency(self, server):
         start = time.time()
@@ -661,7 +800,7 @@ class UpstreamManager:
         
         # Check if we should trigger latency monitoring
         should_check = False
-        if self.monitor_on_query:
+        if self.monitor_on_query and self.mode != "none":
             async with self._monitor_lock:
                 current_time = time.time()
                 time_since_last = current_time - self.last_monitor_time
@@ -671,10 +810,11 @@ class UpstreamManager:
                     # Mark that we're doing a check to prevent multiple concurrent checks
                     self.last_monitor_time = current_time
                     should_check = True
-                    log.debug(f"Triggering latency check (last check was {time_since_last:.1f}s ago)")
+                    log.debug(f"Query-triggered latency check (mode: {self.mode}, last: {time_since_last:.1f}s ago)")
         
         # Trigger check in background if needed
         if should_check:
+            log.debug(f"Starting background latency check...")
             asyncio.create_task(self.check_latencies())
 
         query_info = "Query"
@@ -696,10 +836,22 @@ class UpstreamManager:
         if not candidates: 
             log.error(f"FORWARD FAILURE [ID:{qid}]: No valid upstreams available.")
             return None
+        
+        log.debug(f"Selecting from {len(candidates)} candidates using mode: {self.mode}")
+        
+        # Determine how many servers to try based on their state
+        # If most servers are untested (latency = 999.0), try more servers
+        untested_count = sum(1 for s in candidates if s['latency'] >= 999.0)
+        if untested_count > len(candidates) * 0.5:  # More than 50% untested
+            max_tries = min(len(candidates), 8)  # Try up to 8 servers
+            log.debug(f"Many untested servers ({untested_count}/{len(candidates)}), will try up to {max_tries}")
+        else:
+            max_tries = 3  # Normal operation: try top 3
             
         selected = []
         if self.mode == 'random':
-            selected = random.sample(candidates, k=min(3, len(candidates)))
+            selected = random.sample(candidates, k=min(max_tries, len(candidates)))
+            log.debug(f"Random selection: picked {len(selected)} servers")
         
         elif self.mode == 'roundrobin':
             async with self._rr_lock:
@@ -709,8 +861,9 @@ class UpstreamManager:
                         self._rr_index = 0
                     start_idx = self._rr_index % n
                     self._rr_index = (self._rr_index + 1) % n
-                    for i in range(min(3, n)):
+                    for i in range(min(max_tries, n)):
                         selected.append(candidates[(start_idx + i) % n])
+                    log.debug(f"Round-robin selection: index {start_idx}, picked {len(selected)} servers")
         
         elif self.mode == 'sticky':
             last_srv_id = await self._get_sticky_server(client_ip)
@@ -721,11 +874,26 @@ class UpstreamManager:
             if found:
                 selected.append(found)
                 backups = [s for s in candidates if s['id'] != last_srv_id]
-                selected.extend(backups[:2])
+                selected.extend(backups[:max_tries-1])
+                log.debug(f"Sticky selection: reusing {found['host']} for {client_ip} + {len(selected)-1} backups")
             else:
-                selected = candidates[:3]
+                selected = candidates[:max_tries]
+                log.debug(f"Sticky selection: no previous server for {client_ip}, using top {len(selected)}")
+        
+        elif self.mode in ['fastest', 'failover', 'loadbalance']:
+            # These modes rely on sorted order from latency checks
+            selected = candidates[:max_tries]
+            log.debug(f"{self.mode.capitalize()} selection: using top {len(selected)} from sorted list")
+        
+        elif self.mode == 'none':
+            # No monitoring, just use first servers
+            selected = candidates[:max_tries]
+            log.debug(f"Mode 'none': using first {len(selected)} servers (no latency-based selection)")
+        
         else:
-            selected = candidates[:3]
+            # Unknown mode, use first servers
+            selected = candidates[:max_tries]
+            log.warning(f"Unknown mode '{self.mode}', using first {len(selected)} servers")
 
         log.debug(f"Selected {len(selected)} candidates for '{query_info}':")
         for s in selected:
