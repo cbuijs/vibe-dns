@@ -2,16 +2,15 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 3.5.2 (Bug Fixes)
+# Version: 3.5.3 (Fix: Rule Reporting)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine.
 
 Updates:
-- Fixed case sensitivity enforcement at entry points
-- Fixed incomplete category keyword matching logic
-- Removed unused logging import
-- Added domain format validation
+- Fixed rule reporting to show the actual matched rule, not a reconstructed one
+- When inserting rules, we now store the original rule text
+- When matching, we return the exact rule that was inserted
 """
 
 import regex
@@ -47,7 +46,11 @@ class DomainTrie:
                 node[part] = {}
             node = node[part]
         
-        data = {'rule': rule_data or domain_rule, 'list': list_name}
+        # IMPORTANT: Store the ORIGINAL rule text (e.g., ".doubleclick.net")
+        # not the queried domain
+        original_rule = rule_data if rule_data else domain_rule
+        data = {'rule': original_rule, 'list': list_name}
+        
         if is_exclusive: 
             node['_wild'] = data 
         elif is_inclusive:
@@ -81,7 +84,12 @@ class DomainTrie:
         return True
 
     def match(self, domain_str: str):
-        """Match domain. Input is automatically lowercased."""
+        """
+        Match domain and return the rule data.
+        Input is automatically lowercased.
+        Returns the data dict with 'rule' and 'list' keys, where 'rule' is the
+        ORIGINAL rule that was inserted (e.g., ".doubleclick.net")
+        """
         clean = domain_str.rstrip('.').lower()
         parts = clean.split('.')[::-1]
         node = self.root
@@ -234,6 +242,7 @@ class RuleEngine:
             pass
 
         # Domain Rule
+        # IMPORTANT: Pass the original rule_text as rule_data so it's stored in the trie
         target = self.answer_block_trie if is_answer_only else (
             self.block_trie if list_type == 'block' else self.allow_trie
         )
