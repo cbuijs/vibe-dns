@@ -2,16 +2,16 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 4.0.0 (Major Improvements)
+# Version: 4.1.0 (Decision Cache)
 # -----------------------------------------------------------------------------
 """
 Core DNS Resolution & Processing Logic.
 
-Major Changes:
-- LRU (Least Recently Used) cache eviction strategy
-- Enhanced CNAME loop detection with depth limits
-- Better error handling and validation
-- Improved cache management
+Major Changes (v4.1.0):
+- Added DecisionCache to cache filtering decisions
+- Avoids redundant rule evaluation for repeated queries
+- Separate TTL management for decisions vs. DNS responses
+- Full audit trail with reason/rule/list tracking
 """
 
 import asyncio
@@ -109,6 +109,94 @@ class RequestDeduplicator:
             raise e
         finally:
             if key in self.pending: del self.pending[key]
+
+class DecisionCache:
+    """
+    Cache filtering decisions to avoid redundant rule evaluation.
+    
+    Stores allow/block decisions with reasons, rules, and lists.
+    Uses LRU eviction and configurable TTL.
+    """
+    def __init__(self, size=50000, ttl=300):
+        self.cache: OrderedDict[tuple, tuple[dict, float]] = OrderedDict()
+        self.size = size or 50000
+        self.ttl = ttl or 300
+        
+        # Statistics
+        self.stats = {
+            'hits': 0,
+            'misses': 0,
+            'evictions': 0,
+            'expirations': 0,
+            'writes': 0
+        }
+        
+        logger.info(f"Decision Cache initialized: size={self.size}, TTL={self.ttl}s, LRU eviction enabled")
+    
+    def get(self, qname: str, qtype: int, group: str, policy: str) -> Optional[dict]:
+        """
+        Get cached decision for a query.
+        
+        Returns:
+            dict with {'action', 'reason', 'rule', 'list', 'category'} or None
+        """
+        key = (qname.lower().rstrip('.'), qtype, group, policy)
+        
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            
+            decision, expires = self.cache[key]
+            now = time.time()
+            
+            if now < expires:
+                self.stats['hits'] += 1
+                return decision
+            else:
+                # Expired
+                del self.cache[key]
+                self.stats['expirations'] += 1
+        
+        self.stats['misses'] += 1
+        return None
+    
+    def put(self, qname: str, qtype: int, group: str, policy: str, decision: dict):
+        """
+        Store a filtering decision.
+        
+        Args:
+            decision: dict with 'action' (ALLOW/BLOCK), 'reason', 'rule', 'list', 'category'
+        """
+        if self.size == 0: 
+            return
+        
+        # LRU eviction if full
+        if len(self.cache) >= self.size:
+            evicted_key = next(iter(self.cache))
+            del self.cache[evicted_key]
+            self.stats['evictions'] += 1
+        
+        key = (qname.lower().rstrip('.'), qtype, group, policy)
+        expires = time.time() + self.ttl
+        
+        self.cache[key] = (decision, expires)
+        self.stats['writes'] += 1
+    
+    def get_stats(self) -> dict:
+        """Return decision cache statistics"""
+        total_requests = self.stats['hits'] + self.stats['misses']
+        hit_rate = (self.stats['hits'] / total_requests * 100) if total_requests > 0 else 0
+        
+        return {
+            'size': len(self.cache),
+            'max_size': self.size,
+            'hits': self.stats['hits'],
+            'misses': self.stats['misses'],
+            'hit_rate': f"{hit_rate:.1f}%",
+            'evictions': self.stats['evictions'],
+            'expirations': self.stats['expirations'],
+            'writes': self.stats['writes']
+        }
 
 class DNSCache:
     """
@@ -271,12 +359,18 @@ class DNSHandler:
         self.prefetch_margin = self.config.get('cache', {}).get('prefetch_margin', 0)
         self.prefetch_min_hits = self.config.get('cache', {}).get('prefetch_min_hits', 3)
         
+        # Initialize Decision Cache
+        decision_cache_cfg = self.config.get('decision_cache', {})
+        decision_cache_size = decision_cache_cfg.get('size', 50000)
+        decision_cache_ttl = decision_cache_cfg.get('ttl', 300)
+        self.decision_cache = DecisionCache(size=decision_cache_size, ttl=decision_cache_ttl)
+        
         server_cfg = self.config.get('server') or {}
         self.categorization_enabled = self.config.get('categorization_enabled', True)
         self.forward_ecs_mode = server_cfg.get('forward_ecs_mode', 'none').lower()
         self.forward_mac_mode = server_cfg.get('forward_mac_mode', 'none').lower()
         
-        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}, AnswerMatching: {self.match_answers_globally}")
+        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}, AnswerMatching: {self.match_answers_globally}, DecisionCache: {decision_cache_size} entries")
 
     def identify_client(self, addr, meta, req_logger) -> str | None:
         source_ip = addr[0]
@@ -577,7 +671,37 @@ class DNSHandler:
         group_key = group if group else "default"
         policy_name = self.get_active_policy(group, req_logger)
         
-        # --- Cache Check ---
+        # --- Decision Cache Check (NEW) ---
+        cached_decision = self.decision_cache.get(qname_str, qtype, group_key, policy_name)
+        if cached_decision:
+            action = cached_decision['action']
+            reason = cached_decision.get('reason', 'Unknown')
+            rule = cached_decision.get('rule', 'N/A')
+            list_name = cached_decision.get('list', 'N/A')
+            category = cached_decision.get('category', '')
+            
+            if action == 'BLOCK':
+                req_logger.info(
+                    f"⛔ BLOCKED (Decision Cache Hit) | "
+                    f"Reason: {reason} | "
+                    f"Rule: '{rule}' | "
+                    f"List: '{list_name}' | "
+                    f"Policy: '{policy_name}'"
+                    f"{f' | Category: {category}' if category else ''}"
+                )
+                return self.create_block_response(request, qname, qtype).to_wire()
+            elif action == 'ALLOW':
+                req_logger.info(
+                    f"✓ ALLOWED (Decision Cache Hit) | "
+                    f"Reason: {reason} | "
+                    f"Rule: '{rule}' | "
+                    f"List: '{list_name}' | "
+                    f"Policy: '{policy_name}'"
+                    f"{f' | Category: {category}' if category else ''}"
+                )
+                # Continue to DNS cache / upstream
+        
+        # --- DNS Cache Check ---
         cached_msg, ttl_remain, hits = self.cache.get(qname_str, qtype, group=group_key, scope=policy_name)
         if cached_msg:
             req_logger.info(f"CACHE HIT [{group_key}/{policy_name}]: TTL={int(ttl_remain)}s")
@@ -619,14 +743,26 @@ class DNSHandler:
             reply.flags |= dns.flags.TC
             return reply.to_wire()
 
-        # --- Policy Check (Phase 1: Domain/Type) ---
+        # --- Policy Check (Phase 1: Domain/Type) - Store Decision ---
         if policy_name == "BLOCK":
             req_logger.info(f"⛔ BLOCKED | Reason: Schedule Policy | Schedule: {group} | Policy: BLOCK")
+            
+            # Cache the decision
+            decision = {
+                'action': 'BLOCK',
+                'reason': 'Schedule Policy',
+                'rule': 'N/A',
+                'list': 'Schedule',
+                'category': ''
+            }
+            self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
+            
             return self.create_block_response(request, qname, qtype).to_wire()
 
         engine = self.rule_engines.get(policy_name)
         if engine:
             # Categorization
+            matched_category = None
             if self.categorization_enabled and engine.categorizer:
                  cat_results = engine.categorizer.categorize(qname_str)
                  for cat, score in cat_results.items():
@@ -640,6 +776,17 @@ class DNSHandler:
                                      f"Category: '{cat}' | Confidence: {score}% | "
                                      f"Policy: '{policy_name}' | Min: {rule.get('min_confidence', 0)}%"
                                  )
+                                 
+                                 # Cache the decision
+                                 decision = {
+                                     'action': 'BLOCK',
+                                     'reason': 'Category Match',
+                                     'rule': f"Category: {cat}",
+                                     'list': policy_name,
+                                     'category': f"{cat} ({score}%)"
+                                 }
+                                 self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
+                                 
                                  return self.create_block_response(request, qname, qtype).to_wire()
                              elif action == 'ALLOW':
                                  req_logger.info(
@@ -647,6 +794,17 @@ class DNSHandler:
                                      f"Category: '{cat}' | Confidence: {score}% | "
                                      f"Policy: '{policy_name}'"
                                  )
+                                 matched_category = f"{cat} ({score}%)"
+                                 
+                                 # Cache the decision
+                                 decision = {
+                                     'action': 'ALLOW',
+                                     'reason': 'Category Match',
+                                     'rule': f"Category: {cat}",
+                                     'list': policy_name,
+                                     'category': matched_category
+                                 }
+                                 self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
                      else:
                          # Just informational - category detected but no rule
                          req_logger.debug(f"Category: '{cat}' (Confidence: {score}%)")
@@ -658,6 +816,17 @@ class DNSHandler:
                     f"Type: {dns.rdatatype.to_text(qtype)} | "
                     f"Policy: '{policy_name}' | Details: {reason}"
                 )
+                
+                # Cache the decision
+                decision = {
+                    'action': 'BLOCK',
+                    'reason': 'Query Type Filter',
+                    'rule': f"Type: {dns.rdatatype.to_text(qtype)}",
+                    'list': policy_name,
+                    'category': ''
+                }
+                self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
+                
                 return self.create_block_response(request, qname, qtype).to_wire()
 
             action, rule, list_name = engine.is_blocked(qname_str)
@@ -669,6 +838,17 @@ class DNSHandler:
                     f"List: '{list_name}' | "
                     f"Policy: '{policy_name}'"
                 )
+                
+                # Cache the decision
+                decision = {
+                    'action': 'BLOCK',
+                    'reason': 'Domain Rule',
+                    'rule': rule,
+                    'list': list_name,
+                    'category': ''
+                }
+                self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
+                
                 return self.create_block_response(request, qname, qtype).to_wire()
             elif action == "ALLOW":
                 req_logger.info(
@@ -678,6 +858,16 @@ class DNSHandler:
                     f"List: '{list_name}' | "
                     f"Policy: '{policy_name}'"
                 )
+                
+                # Cache the decision
+                decision = {
+                    'action': 'ALLOW',
+                    'reason': 'Domain Allowlist',
+                    'rule': rule,
+                    'list': list_name,
+                    'category': ''
+                }
+                self.decision_cache.put(qname_str, qtype, group_key, policy_name, decision)
 
         # --- Upstream Resolution ---
         dedup_key = (qname_str, qtype, policy_name, group_key)
@@ -853,4 +1043,5 @@ class DNSHandler:
         
         self.cache.put(response, group=group_key, scope=policy_name, req_logger=req_logger)
         return response
+
 

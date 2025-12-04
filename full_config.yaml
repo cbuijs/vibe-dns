@@ -189,6 +189,18 @@ cache:
   # Minimum number of cache hits required before an entry qualifies for prefetching.
   prefetch_min_hits: 3
 
+decision_cache:
+  # Maximum number of filtering decisions to cache in memory (0 disables).
+  # Default: 50000
+  # Memory usage: ~5-10 MB for 50K entries
+  size: 2500
+  
+  # Time-to-live (seconds) for cached decisions.
+  # Lower values propagate policy changes faster, higher values improve performance.
+  # Recommended: 300 (5 minutes) for typical home networks
+  # Default: 300
+  ttl: 300
+
 deduplication:
   # Enable request coalescing. If enabled, multiple identical requests arriving
   # almost simultaneously result in only one query being sent upstream.

@@ -2,15 +2,14 @@
 # filename: server.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 4.0.0 (Major Improvements)
+# Version: 4.1.0 (Decision Cache)
 # -----------------------------------------------------------------------------
 """
 Main Server Module.
 
 Updates:
-- Integrated configuration validation
-- Better error handling
-- Enhanced logging
+- Added decision cache statistics logging
+- Integrated with DecisionCache for performance monitoring
 """
 
 import asyncio
@@ -191,8 +190,8 @@ async def main() -> None:
 
     # 4. Setup Logging
     setup_logger(config)
-    logger.info("Starting DNS Filter Server v4.0.0 (Engine: dnspython)")
-    logger.info("Major improvements: LRU cache, circuit breakers, DoH HTTP/2, config validation")
+    logger.info("Starting DNS Filter Server v4.1.0 (Engine: dnspython + Decision Cache)")
+    logger.info("Major improvements: Decision caching, LRU cache, circuit breakers, DoH HTTP/2, config validation")
     
     # 5. Initialize Components
     logger.info(">>> Phase 2: Component Initialization")
@@ -308,12 +307,18 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, stop_event)))
 
+    # Decision cache configuration
+    decision_cache_cfg = config.get('decision_cache', {})
+    decision_cache_size = decision_cache_cfg.get('size', 50000)
+    decision_cache_ttl = decision_cache_cfg.get('ttl', 300)
+
     logger.info("=" * 80)
     logger.info(">>> Server is Ready & Running")
     logger.info("=" * 80)
     logger.info(f"Listening on {len(listen_ips)} IP(s), {len(udp_ports)} UDP + {len(tcp_ports)} TCP port(s)")
     logger.info(f"Upstream mode: {config['upstream'].get('mode', 'fastest')}")
-    logger.info(f"Cache size: {cache_cfg.get('size', 10000)} entries (LRU eviction)")
+    logger.info(f"DNS cache: {cache_cfg.get('size', 10000)} entries (LRU eviction)")
+    logger.info(f"Decision cache: {decision_cache_size} entries, TTL={decision_cache_ttl}s (LRU eviction)")
     logger.info(f"Circuit breakers: {'enabled' if config['upstream'].get('circuit_breaker_enabled', True) else 'disabled'}")
     logger.info("Press Ctrl+C to stop")
     logger.info("=" * 80)
@@ -325,13 +330,21 @@ async def main() -> None:
     logger.info(">>> Initiating Graceful Shutdown")
     logger.info("=" * 80)
     
-    # Log cache statistics before shutdown
+    # Log DNS cache statistics before shutdown
     cache_stats = cache.get_stats()
-    logger.info(f"Final cache statistics:")
+    logger.info(f"Final DNS cache statistics:")
     logger.info(f"  Size: {cache_stats['size']}/{cache_stats['max_size']}")
     logger.info(f"  Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}")
     logger.info(f"  Hit rate: {cache_stats['hit_rate']}")
     logger.info(f"  Evictions: {cache_stats['evictions']}, Expirations: {cache_stats['expirations']}")
+    
+    # Log decision cache statistics
+    decision_stats = handler.decision_cache.get_stats()
+    logger.info(f"Final decision cache statistics:")
+    logger.info(f"  Size: {decision_stats['size']}/{decision_stats['max_size']}")
+    logger.info(f"  Hits: {decision_stats['hits']}, Misses: {decision_stats['misses']}")
+    logger.info(f"  Hit rate: {decision_stats['hit_rate']}")
+    logger.info(f"  Evictions: {decision_stats['evictions']}, Expirations: {decision_stats['expirations']}")
     
     monitor_task.cancel()
     
