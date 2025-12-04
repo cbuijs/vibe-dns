@@ -1141,8 +1141,7 @@ class DNSHandler:
                                  f"Policy: '{policy_name}' | "
                                  f"Mode: block (entire response)"
                              )
-                             block_resp = self.create_block_response(request, request.question[0].name, qtype)
-                             return block_resp
+                             return self.create_block_response(request, request.question[0].name, qtype).to_wire()
                          # If mode is 'filter', we just skip adding this rrset
                     else:
                         safe_rrsets.append(rrset)
