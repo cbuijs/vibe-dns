@@ -2,11 +2,15 @@
 # filename: cache_stats.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.0
+# Version: 2.0.0 (LRU Cache Base)
 # -----------------------------------------------------------------------------
 """
-Reusable statistics tracking for cache implementations.
+Reusable cache infrastructure with LRU eviction and statistics.
 """
+
+import time
+from collections import OrderedDict
+from typing import Any, Tuple, Optional
 
 
 class CacheStats:
@@ -71,4 +75,119 @@ class CacheStats:
         self.evictions = 0
         self.expirations = 0
         self.writes = 0
+
+
+class LRUCache:
+    """
+    Generic LRU cache with TTL support.
+    
+    Features:
+    - LRU eviction when full
+    - Per-entry TTL expiration
+    - Automatic statistics tracking
+    - Type-agnostic (subclasses define value structure)
+    """
+    
+    def __init__(self, max_size: int, default_ttl: int = 300):
+        """
+        Initialize LRU cache.
+        
+        Args:
+            max_size: Maximum number of entries (0 = disabled)
+            default_ttl: Default TTL in seconds
+        """
+        self.cache: OrderedDict[Any, Tuple[Any, float]] = OrderedDict()
+        self.max_size = max_size or 0
+        self.default_ttl = default_ttl
+        self.stats = CacheStats()
+    
+    def get(self, key: Any) -> Optional[Any]:
+        """
+        Get value from cache.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached value or None if expired/missing
+        """
+        if self.max_size == 0:
+            self.stats.record_miss()
+            return None
+        
+        if key not in self.cache:
+            self.stats.record_miss()
+            return None
+        
+        # Move to end (most recently used)
+        self.cache.move_to_end(key)
+        
+        value, expires = self.cache[key]
+        now = time.time()
+        
+        if now >= expires:
+            # Expired
+            del self.cache[key]
+            self.stats.record_expiration()
+            self.stats.record_miss()
+            return None
+        
+        self.stats.record_hit()
+        return value
+    
+    def put(self, key: Any, value: Any, ttl: Optional[int] = None):
+        """
+        Store value in cache.
+        
+        Args:
+            key: Cache key
+            value: Value to store
+            ttl: Time-to-live in seconds (None = use default)
+        """
+        if self.max_size == 0:
+            return
+        
+        # LRU eviction if full
+        if len(self.cache) >= self.max_size and key not in self.cache:
+            evicted_key = next(iter(self.cache))
+            del self.cache[evicted_key]
+            self.stats.record_eviction()
+        
+        expires = time.time() + (ttl if ttl is not None else self.default_ttl)
+        self.cache[key] = (value, expires)
+        
+        # Move to end if updating existing key
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        
+        self.stats.record_write()
+    
+    def delete(self, key: Any):
+        """Remove entry from cache"""
+        if key in self.cache:
+            del self.cache[key]
+    
+    def clear(self):
+        """Clear all entries"""
+        self.cache.clear()
+    
+    def get_stats(self) -> dict:
+        """Get cache statistics"""
+        return self.stats.get_stats(len(self.cache), self.max_size)
+    
+    def cleanup_expired(self) -> int:
+        """
+        Remove expired entries.
+        
+        Returns:
+            Number of entries removed
+        """
+        now = time.time()
+        expired = [k for k, (_, exp) in self.cache.items() if exp < now]
+        
+        for k in expired:
+            del self.cache[k]
+            self.stats.record_expiration()
+        
+        return len(expired)
 

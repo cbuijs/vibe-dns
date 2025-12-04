@@ -2,16 +2,22 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 3.5.3 (Fix: Rule Reporting) + OPTIMIZED
+# Version: 5.0.0 (Optimized - Regex Caching)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine.
 
-Updates:
-- Fixed rule reporting to show the actual matched rule, not a reconstructed one
-- When inserting rules, we now store the original rule text
-- When matching, we return the exact rule that was inserted
-- OPTIMIZED: Uses validation module instead of duplicate _is_valid_domain
+Updates (v5.0.0):
+- Regex pattern caching: Patterns compiled once and reused
+- DomainCategorizer pre-compiles all patterns during __init__
+- RuleEngine caches regex patterns to avoid recompilation
+- Added get_stats() method for monitoring
+
+Updates (v4.0.0):
+- All methods now expect PRE-NORMALIZED domain names (lowercase, no trailing dot)
+- Removed redundant .lower() and .rstrip('.') calls throughout
+- Domain normalization happens once at entry point (resolver.py)
+- Improved performance by eliminating duplicate string operations
 """
 
 import regex
@@ -29,13 +35,22 @@ class DomainTrie:
         self.root = {} 
 
     def insert(self, domain_rule, rule_data=None, list_name="Unknown"):
+        """
+        Insert rule into trie.
+        
+        Args:
+            domain_rule: Domain rule (can have . or *. prefix)
+            rule_data: Original rule text to store
+            list_name: List name for tracking
+            
+        Note: Expects normalized input (lowercase, no trailing dot)
+        """
         is_inclusive = domain_rule.startswith('.')
         is_exclusive = domain_rule.startswith('*.')
         
-        # Ensure domain stored in Trie is always lowercase
-        clean_domain = domain_rule.lstrip('.*').lower()
+        clean_domain = domain_rule.lstrip('.*')
         
-        # Validate domain format - OPTIMIZED: Uses validation module
+        # Validate domain format
         if not is_valid_domain(clean_domain, allow_underscores=False):
             logger.warning(f"Invalid domain format, skipping: {domain_rule}")
             return
@@ -48,8 +63,6 @@ class DomainTrie:
                 node[part] = {}
             node = node[part]
         
-        # IMPORTANT: Store the ORIGINAL rule text (e.g., ".doubleclick.net")
-        # not the queried domain
         original_rule = rule_data if rule_data else domain_rule
         data = {'rule': original_rule, 'list': list_name}
         
@@ -61,15 +74,17 @@ class DomainTrie:
         else: 
             node['_end'] = data 
 
-    def match(self, domain_str: str):
+    def match(self, domain_norm: str):
         """
         Match domain and return the rule data.
-        Input is automatically lowercased.
-        Returns the data dict with 'rule' and 'list' keys, where 'rule' is the
-        ORIGINAL rule that was inserted (e.g., ".doubleclick.net")
+        
+        Args:
+            domain_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
+            
+        Returns:
+            Data dict with 'rule' and 'list' keys, or None
         """
-        clean = domain_str.rstrip('.').lower()
-        parts = clean.split('.')[::-1]
+        parts = domain_norm.split('.')[::-1]
         node = self.root
         last_wildcard_data = None
 
@@ -91,28 +106,51 @@ class DomainCategorizer:
     def __init__(self, categories_file="categories.json"):
         self.categories = {}
         self.regex_cache = {}
+        
         try:
             with open(categories_file, 'r') as f:
                 self.categories = json.load(f)
             
+            # Pre-compile ALL regex patterns during initialization
+            total_patterns = 0
+            failed_patterns = 0
+            
             for cat, data in self.categories.items():
-                if 'regex' in data:
+                if 'regex' in data and data['regex']:
                     self.regex_cache[cat] = []
                     for r_str in data['regex']:
-                        try: 
-                            self.regex_cache[cat].append(regex.compile(r_str, regex.IGNORECASE))
+                        try:
+                            compiled_pattern = regex.compile(r_str, regex.IGNORECASE)
+                            self.regex_cache[cat].append(compiled_pattern)
+                            total_patterns += 1
                         except Exception as e:
-                            logger.warning(f"Failed to compile regex for {cat}: {e}")
+                            logger.warning(f"Failed to compile regex for category '{cat}': {r_str} - {e}")
+                            failed_patterns += 1
+            
+            if total_patterns > 0:
+                logger.info(
+                    f"DomainCategorizer: Pre-compiled {total_patterns} regex patterns "
+                    f"across {len(self.regex_cache)} categories"
+                    f"{f' ({failed_patterns} failed)' if failed_patterns > 0 else ''}"
+                )
+            
         except FileNotFoundError:
             logger.warning(f"Categories file not found: {categories_file}")
         except Exception as e:
             logger.error(f"Error loading categories: {e}")
 
-    def categorize(self, domain: str) -> dict:
-        """Categorize domain. Input is automatically lowercased."""
+    def categorize(self, domain_norm: str) -> dict:
+        """
+        Categorize domain.
+        
+        Args:
+            domain_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
+            
+        Returns:
+            Dict of {category: confidence_score}
+        """
         results = {}
-        domain_lower = domain.lower().rstrip('.')
-        parts = domain_lower.replace('-', '.').split('.')
+        parts = domain_norm.replace('-', '.').split('.')
         tld = parts[-1] if parts else ""
         
         for category, data in self.categories.items():
@@ -125,18 +163,18 @@ class DomainCategorizer:
             # Regex matching
             if category in self.regex_cache:
                 for pattern in self.regex_cache[category]:
-                    if pattern.search(domain_lower):
+                    if pattern.search(domain_norm):
                         score = max(score, 100)
                         break
             
-            # Keyword matching (FIXED)
+            # Keyword matching
             if 'keywords' in data:
                 for kw in data['keywords']:
-                    kw_lower = kw.lower()
-                    if kw_lower in parts:
+                    # Keywords in categories.json are already lowercase
+                    if kw in parts:
                         score = max(score, 95)
-                    elif kw_lower in domain_lower:
-                        score = max(score, 70)  # Lower score for substring match
+                    elif kw in domain_norm:
+                        score = max(score, 70)
             
             if score > 0: 
                 results[category] = score
@@ -158,6 +196,9 @@ class RuleEngine:
         self.blocked_types = set()
         self.categorizer = None 
         self.category_rules = {}
+        
+        # Regex pattern cache - prevents recompilation
+        self._regex_cache = {}
 
     def set_type_filters(self, allowed: list[str], blocked: list[str]):
         if allowed:
@@ -188,6 +229,17 @@ class RuleEngine:
         return False, None, None
 
     def add_rule(self, rule_text, list_type='block', list_name="Unknown"):
+        """
+        Add a filtering rule.
+        
+        Args:
+            rule_text: Rule text (will be normalized)
+            list_type: 'allow' or 'block'
+            list_name: Source list name
+            
+        Returns:
+            Rule type: 'domain', 'regex', 'ip', 'cidr', or 'ignored'
+        """
         rule_text = rule_text.strip()
         if not rule_text or rule_text.startswith('#'): 
             return "ignored"
@@ -195,18 +247,24 @@ class RuleEngine:
         is_answer_only = rule_text.startswith('@')
         clean_rule_text = rule_text[1:] if is_answer_only else rule_text
 
-        # Regex Rule
+        # Regex Rule - with pattern caching
         if clean_rule_text.startswith('/') and clean_rule_text.endswith('/'):
-            try:
-                pattern = regex.compile(clean_rule_text[1:-1], regex.IGNORECASE)
-                target = self.answer_block_regex if is_answer_only else (
-                    self.block_regex if list_type == 'block' else self.allow_regex
-                )
-                target.append((pattern, rule_text, list_name)) 
-                return "regex"
-            except Exception as e:
-                logger.warning(f"Invalid regex rule: {rule_text} - {e}")
-                return "ignored"
+            pattern_str = clean_rule_text[1:-1]
+            
+            # Check cache first
+            if pattern_str not in self._regex_cache:
+                try:
+                    self._regex_cache[pattern_str] = regex.compile(pattern_str, regex.IGNORECASE)
+                except Exception as e:
+                    logger.warning(f"Invalid regex rule: {rule_text} - {e}")
+                    return "ignored"
+            
+            pattern = self._regex_cache[pattern_str]
+            target = self.answer_block_regex if is_answer_only else (
+                self.block_regex if list_type == 'block' else self.allow_regex
+            )
+            target.append((pattern, rule_text, list_name)) 
+            return "regex"
 
         # IP/CIDR Rule
         try:
@@ -219,31 +277,53 @@ class RuleEngine:
         except ValueError: 
             pass
 
-        # Domain Rule
-        # IMPORTANT: Pass the original rule_text as rule_data so it's stored in the trie
+        # Domain Rule - normalize before insertion
+        from domain_utils import normalize_domain
+        clean_normalized = normalize_domain(clean_rule_text)
+        
+        # Preserve prefix for rule matching
+        if clean_rule_text.startswith('.'):
+            clean_normalized = '.' + clean_normalized
+        elif clean_rule_text.startswith('*.'):
+            clean_normalized = '*.' + clean_normalized
+        
         target = self.answer_block_trie if is_answer_only else (
             self.block_trie if list_type == 'block' else self.allow_trie
         )
-        target.insert(clean_rule_text, rule_data=rule_text, list_name=list_name)
+        target.insert(clean_normalized, rule_data=rule_text, list_name=list_name)
         return "domain"
 
-    def is_blocked(self, qname: str):
-        """Check if domain is blocked. Input is automatically lowercased."""
-        # Ensure lowercase at entry point
-        qname_lower = qname.lower().rstrip('.')
+    def is_blocked(self, qname_norm: str):
+        """
+        Check if domain is blocked.
         
-        match = self.allow_trie.match(qname_lower)
+        Args:
+            qname_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
+            
+        Returns:
+            (action, rule, list_name) tuple where action is ALLOW/BLOCK/PASS
+        """
+        match = self.allow_trie.match(qname_norm)
         if match: 
             return "ALLOW", match['rule'], match['list']
         
-        match = self.block_trie.match(qname_lower)
+        match = self.block_trie.match(qname_norm)
         if match: 
             return "BLOCK", match['rule'], match['list']
         
         return "PASS", None, None
 
-    def check_answer(self, qname_str, ip_str):
-        """Check answer records. Inputs are automatically lowercased/normalized."""
+    def check_answer(self, qname_norm, ip_str):
+        """
+        Check answer records.
+        
+        Args:
+            qname_norm: PRE-NORMALIZED domain (lowercase, no trailing dot) or None
+            ip_str: IP address string or None
+            
+        Returns:
+            (is_blocked, rule, list_name) tuple
+        """
         if ip_str:
             try:
                 ip = ipaddress.ip_address(ip_str)
@@ -253,14 +333,36 @@ class RuleEngine:
             except ValueError: 
                 pass 
         
-        if qname_str:
-            qname = str(qname_str).lower().rstrip('.')
+        if qname_norm:
             for pat, original_rule, list_name in self.answer_block_regex:
-                if pat.search(qname): 
+                if pat.search(qname_norm): 
                     return True, original_rule, list_name
-            match = self.answer_block_trie.match(qname)
+            match = self.answer_block_trie.match(qname_norm)
             if match: 
                 return True, match['rule'], match['list']
         
         return False, None, None
+    
+    def get_stats(self) -> dict:
+        """
+        Get filtering engine statistics.
+        
+        Returns:
+            Dict with rule counts and cache stats
+        """
+        return {
+            'allow_domains': len(self.allow_trie.root),
+            'block_domains': len(self.block_trie.root),
+            'allow_regex': len(self.allow_regex),
+            'block_regex': len(self.block_regex),
+            'allow_ips': len(self.allow_ips),
+            'block_ips': len(self.block_ips),
+            'answer_block_domains': len(self.answer_block_trie.root),
+            'answer_block_regex': len(self.answer_block_regex),
+            'answer_block_ips': len(self.answer_block_ips),
+            'regex_patterns_cached': len(self._regex_cache),
+            'allowed_types': len(self.allowed_types),
+            'blocked_types': len(self.blocked_types),
+            'category_rules': len(self.category_rules)
+        }
 
