@@ -594,6 +594,130 @@ class DNSHandler:
         if shuffled and req_logger:
             req_logger.debug("Round Robin: Shuffled A/AAAA answer records")
 
+    def _log_response(self, response: dns.message.Message, req_logger):
+        """
+        Log detailed response information at DEBUG level.
+        Mirrors query logging format but includes all response details.
+        """
+        if not req_logger.isEnabledFor(logging.DEBUG):
+            return
+        
+        # Response code
+        rcode = dns.rcode.to_text(response.rcode())
+        
+        # Count sections
+        answer_count = len(response.answer)
+        authority_count = len(response.authority)
+        additional_count = len(response.additional)
+        
+        # Build response summary
+        req_logger.debug(
+            f"RESPONSE: RCODE={rcode} | "
+            f"Answers={answer_count}, Authority={authority_count}, Additional={additional_count}"
+        )
+        
+        # Log each answer section in detail
+        if answer_count > 0:
+            req_logger.debug("  Answer Section:")
+            for i, rrset in enumerate(response.answer, 1):
+                qtype_name = dns.rdatatype.to_text(rrset.rdtype)
+                ttl = rrset.ttl
+                record_count = len(rrset)
+                
+                # Log the RRset header
+                req_logger.debug(
+                    f"    [{i}/{answer_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
+                )
+                
+                # Log each record in the RRset
+                for j, rdata in enumerate(rrset, 1):
+                    rdata_text = rdata.to_text()
+                    req_logger.debug(f"      • {rdata_text}")
+        
+        # Log authority section if present
+        if authority_count > 0:
+            req_logger.debug("  Authority Section:")
+            for i, rrset in enumerate(response.authority, 1):
+                qtype_name = dns.rdatatype.to_text(rrset.rdtype)
+                ttl = rrset.ttl
+                record_count = len(rrset)
+                
+                req_logger.debug(
+                    f"    [{i}/{authority_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
+                )
+                
+                for j, rdata in enumerate(rrset, 1):
+                    rdata_text = rdata.to_text()
+                    req_logger.debug(f"      • {rdata_text}")
+        
+        # Log additional section if present (excluding EDNS OPT)
+        if additional_count > 0:
+            req_logger.debug("  Additional Section:")
+            for i, rrset in enumerate(response.additional, 1):
+                # Skip OPT pseudo-record (EDNS)
+                if rrset.rdtype == dns.rdatatype.OPT:
+                    continue
+                
+                qtype_name = dns.rdatatype.to_text(rrset.rdtype)
+                ttl = rrset.ttl
+                record_count = len(rrset)
+                
+                req_logger.debug(
+                    f"    [{i}/{additional_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
+                )
+                
+                for j, rdata in enumerate(rrset, 1):
+                    rdata_text = rdata.to_text()
+                    req_logger.debug(f"      • {rdata_text}")
+        
+        # Log EDNS information if present
+        if response.edns >= 0:
+            edns_info = []
+            edns_info.append(f"Version={response.edns}")
+            edns_info.append(f"Payload={response.payload}")
+            
+            if response.options:
+                option_names = []
+                for opt in response.options:
+                    if isinstance(opt, dns.edns.ECSOption):
+                        option_names.append(f"ECS({opt.address}/{opt.srclen})")
+                    elif isinstance(opt, dns.edns.GenericOption):
+                        if opt.otype == 65001:
+                            try:
+                                mac = ":".join(f"{b:02x}" for b in opt.data).upper()
+                                option_names.append(f"MAC({mac})")
+                            except:
+                                option_names.append(f"MAC(invalid)")
+                        else:
+                            option_names.append(f"Option({opt.otype})")
+                    elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
+                        option_names.append("Cookie")
+                    else:
+                        option_names.append(f"Unknown({type(opt).__name__})")
+                
+                edns_info.append(f"Options=[{', '.join(option_names)}]")
+            
+            req_logger.debug(f"  EDNS: {' | '.join(edns_info)}")
+        
+        # Log flags if any special flags are set
+        flags = []
+        if response.flags & dns.flags.AA:
+            flags.append("AA")
+        if response.flags & dns.flags.TC:
+            flags.append("TC")
+        if response.flags & dns.flags.RD:
+            flags.append("RD")
+        if response.flags & dns.flags.RA:
+            flags.append("RA")
+        if response.flags & dns.flags.AD:
+            flags.append("AD")
+        if response.flags & dns.flags.CD:
+            flags.append("CD")
+        
+        if flags:
+            req_logger.debug(f"  Flags: {' '.join(flags)}")
+
+
     async def process_query(self, data, client_addr, meta=None):
         try:
             request = dns.message.from_wire(data)
@@ -728,6 +852,10 @@ class DNSHandler:
                 req_logger.debug(f"Prefetching {qname_str} (Hits: {hits})")
                 asyncio.create_task(self._resolve_upstream(qname_str, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key))
             self.round_robin_answers(cached_msg, req_logger)
+
+            # --- Response Logging (DEBUG) ---
+            self._log_response(cached_msg, req_logger)
+
             return cached_msg.to_wire()
         else:
             req_logger.debug(f"CACHE MISS [{group_key}/{policy_name}]: {qname_str}")
@@ -741,6 +869,7 @@ class DNSHandler:
             req_logger.warning("Rate Limit Exceeded: Forcing TCP")
             reply = dns.message.make_response(request)
             reply.flags |= dns.flags.TC
+
             return reply.to_wire()
 
         # --- Policy Check (Phase 1: Domain/Type) - Store Decision ---
@@ -894,6 +1023,9 @@ class DNSHandler:
             payload = final_msg.payload if final_msg.payload >= 512 else 1232
             final_msg.use_edns(edns=edns_ver, ednsflags=final_msg.ednsflags, options=filtered_final_options, payload=payload)
         
+        # --- Response Logging (DEBUG) ---
+        self._log_response(final_msg, req_logger)
+
         return final_msg.to_wire()
 
     async def _resolve_upstream(self, qname_str, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default"):
