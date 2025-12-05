@@ -2,10 +2,15 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.0.0 (GeoIP + DROP Action)
+# Version: 6.1.0 (Enhanced GeoIP Logging)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine with GeoIP support and DROP action.
+
+Updates (v6.1.0):
+- Enhanced GeoIP logging with detailed country information
+- Improved check_answer() with comprehensive GeoIP tracking
+- Better rule loading feedback
 
 Updates (v6.0.0):
 - GeoIP-based filtering for client identification and answer blocking
@@ -65,24 +70,22 @@ class DomainTrie:
     def match(self, domain_norm: str):
         parts = domain_norm.split('.')[::-1]
         node = self.root
-        last_wildcard_data = None
-
-        for part in parts:
-            if '_wild' in node: 
-                last_wildcard_data = node['_wild']
-            if part in node: 
-                node = node[part]
-            else: 
-                return last_wildcard_data
+        
+        for i, part in enumerate(parts):
+            if part not in node: 
+                if '_wild' in node: 
+                    return node['_wild']
+                return None
+            node = node[part]
         
         if '_end' in node: 
             return node['_end']
         if '_wild' in node: 
             return node['_wild']
-        return last_wildcard_data
+        return None
 
 class DomainCategorizer:
-    def __init__(self, categories_file="categories.json"):
+    def __init__(self, categories_file='categories.json'):
         self.categories = {}
         self.regex_cache = {}
         
@@ -90,36 +93,23 @@ class DomainCategorizer:
             with open(categories_file, 'r') as f:
                 self.categories = json.load(f)
             
-            total_patterns = 0
-            failed_patterns = 0
+            for category, data in self.categories.items():
+                if 'patterns' in data:
+                    self.regex_cache[category] = [
+                        regex.compile(pattern, regex.IGNORECASE)
+                        for pattern in data['patterns']
+                    ]
             
-            for cat, data in self.categories.items():
-                if 'regex' in data and data['regex']:
-                    self.regex_cache[cat] = []
-                    for r_str in data['regex']:
-                        try:
-                            compiled_pattern = regex.compile(r_str, regex.IGNORECASE)
-                            self.regex_cache[cat].append(compiled_pattern)
-                            total_patterns += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to compile regex for category '{cat}': {r_str} - {e}")
-                            failed_patterns += 1
-            
-            if total_patterns > 0:
-                logger.info(
-                    f"DomainCategorizer: Pre-compiled {total_patterns} regex patterns "
-                    f"across {len(self.regex_cache)} categories"
-                    f"{f' ({failed_patterns} failed)' if failed_patterns > 0 else ''}"
-                )
-            
+            logger.info(f"Loaded {len(self.categories)} categories from {categories_file}")
+            logger.debug(f"Pre-compiled {sum(len(v) for v in self.regex_cache.values())} regex patterns")
         except FileNotFoundError:
             logger.warning(f"Categories file not found: {categories_file}")
         except Exception as e:
             logger.error(f"Error loading categories: {e}")
 
-    def categorize(self, domain_norm: str) -> dict:
+    def classify(self, domain_norm: str) -> dict:
         results = {}
-        parts = domain_norm.replace('-', '.').split('.')
+        parts = domain_norm.split('.')
         tld = parts[-1] if parts else ""
         
         for category, data in self.categories.items():
@@ -199,17 +189,13 @@ class RuleEngine:
     def check_type(self, qtype: int):
         qtype_name = dns.rdatatype.to_text(qtype)
         
-        # Check allowed_types first (whitelist mode)
         if self.allowed_types:
             if qtype not in self.allowed_types: 
                 return "BLOCK", f"Type {qtype_name} NOT in allowed list", "PolicyTypeFilter"
-            # If in allowed list, still check dropped_types below
         
-        # Check dropped_types (highest priority action if type is otherwise allowed)
         if self.dropped_types and qtype in self.dropped_types:
             return "DROP", f"Type {qtype_name} IS in dropped list", "PolicyTypeFilter"
         
-        # Check blocked_types
         if self.blocked_types and qtype in self.blocked_types:
             return "BLOCK", f"Type {qtype_name} IS in blocked list", "PolicyTypeFilter"
         
@@ -220,28 +206,34 @@ class RuleEngine:
         if not rule_text or rule_text.startswith('#'): 
             return "ignored"
         
-        is_answer_only = rule_text.startswith('@')
-        clean_rule_text = rule_text[1:] if is_answer_only else rule_text
-
-        # GeoIP Rule (@COUNTRY, @CONTINENT, @REGION)
-        if clean_rule_text.startswith('@'):
-            location_spec = clean_rule_text[1:].upper()
-            target = (
-                self.answer_drop_geoip if is_answer_only and list_type == 'drop' else
-                self.answer_block_geoip if is_answer_only else []
-            )
-            if not target:
-                logger.warning(f"GeoIP rules only supported in answer-only mode: {rule_text}")
+        # GeoIP Rule FIRST (@@COUNTRY, @@CONTINENT, @@REGION)
+        if rule_text.startswith('@@'):
+            location_spec = rule_text[2:].upper()
+            
+            if list_type == 'drop':
+                target = self.answer_drop_geoip
+            elif list_type == 'block':
+                target = self.answer_block_geoip
+            else:
+                logger.warning(
+                    f"⚠ GEO-IP rule only works in block/drop lists: {rule_text} | "
+                    f"List: '{list_name}' | Type: '{list_type}'"
+                )
                 return "ignored"
             
             target.append((location_spec, rule_text, list_name))
-            logger.debug(
-                f"Added GeoIP rule: {rule_text} | "
+            logger.info(
+                f"✓ Added GEO-IP rule: {rule_text} | "
                 f"Location: {location_spec} | "
                 f"Action: {list_type.upper()} | "
-                f"List: {list_name}"
+                f"List: '{list_name}' | "
+                f"Total {list_type.upper()} rules: {len(target)}"
             )
             return "geoip"
+        
+        # Regular answer-only rules (@domain, @ip)
+        is_answer_only = rule_text.startswith('@')
+        clean_rule_text = rule_text[1:] if is_answer_only else rule_text
 
         # Regex Rule
         if clean_rule_text.startswith('/') and clean_rule_text.endswith('/'):
@@ -328,27 +320,56 @@ class RuleEngine:
         Check answer records.
         Returns (action, rule, list_name) where action is BLOCK/DROP/PASS
         """
-        # GeoIP check for answer IPs
+        # GeoIP check for answer IPs - ENHANCED LOGGING
         if ip_str and geoip_lookup:
-            logger.debug(f"Checking answer IP {ip_str} against GeoIP rules...")
-            
-            for location_spec, rule, list_name in self.answer_drop_geoip:
-                logger.debug(f"  Testing DROP rule: {rule} (location: {location_spec})")
-                if geoip_lookup.match_location(ip_str, location_spec):
+            if not geoip_lookup.enabled:
+                logger.debug(f"⚠ GEO-IP disabled, skipping check for IP {ip_str}")
+            else:
+                # Perform lookup FIRST to get geo info for logging
+                geo_info = geoip_lookup.lookup(ip_str)
+                if geo_info:
                     logger.info(
-                        f"✓ GeoIP DROP match: IP {ip_str} matches {location_spec} | "
-                        f"Rule: '{rule}' | List: '{list_name}'"
+                        f"🌍 GEO-IP lookup | IP: {ip_str} | "
+                        f"Country: {geo_info.get('country_code')} ({geo_info.get('country_name')}) | "
+                        f"Continent: {geo_info.get('continent_code')} | "
+                        f"Testing {len(self.answer_drop_geoip) + len(self.answer_block_geoip)} GEO-IP rules"
                     )
-                    return "DROP", rule, list_name
-            
-            for location_spec, rule, list_name in self.answer_block_geoip:
-                logger.debug(f"  Testing BLOCK rule: {rule} (location: {location_spec})")
-                if geoip_lookup.match_location(ip_str, location_spec):
-                    logger.info(
-                        f"✓ GeoIP BLOCK match: IP {ip_str} matches {location_spec} | "
-                        f"Rule: '{rule}' | List: '{list_name}'"
-                    )
-                    return "BLOCK", rule, list_name
+                else:
+                    logger.debug(f"GEO-IP lookup failed for {ip_str} (private/invalid IP?)")
+                
+                # DROP rules
+                for location_spec, rule, list_name in self.answer_drop_geoip:
+                    logger.debug(f"  → Testing DROP rule: {rule} (location: {location_spec})")
+                    if geoip_lookup.match_location(ip_str, location_spec):
+                        logger.warning(
+                            f"🔇 GEO-IP DROP TRIGGERED | "
+                            f"IP: {ip_str} | "
+                            f"Location: {location_spec} | "
+                            f"Rule: '{rule}' | "
+                            f"List: '{list_name}' | "
+                            f"Country: {geo_info.get('country_code') if geo_info else 'Unknown'}"
+                        )
+                        return "DROP", rule, list_name
+                    else:
+                        logger.debug(f"    ✗ No match for {location_spec}")
+                
+                # BLOCK rules
+                for location_spec, rule, list_name in self.answer_block_geoip:
+                    logger.debug(f"  → Testing BLOCK rule: {rule} (location: {location_spec})")
+                    if geoip_lookup.match_location(ip_str, location_spec):
+                        logger.warning(
+                            f"⛔ GEO-IP BLOCK TRIGGERED | "
+                            f"IP: {ip_str} | "
+                            f"Location: {location_spec} | "
+                            f"Rule: '{rule}' | "
+                            f"List: '{list_name}' | "
+                            f"Country: {geo_info.get('country_code') if geo_info else 'Unknown'}"
+                        )
+                        return "BLOCK", rule, list_name
+                    else:
+                        logger.debug(f"    ✗ No match for {location_spec}")
+                
+                logger.debug(f"  ✓ GEO-IP check passed for {ip_str}, no matches")
         
         # IP check
         if ip_str:
@@ -417,9 +438,47 @@ class RuleEngine:
             'category_rules': len(self.category_rules)
         }
         
-        # Log GeoIP rules if present
+        # Enhanced GeoIP rules logging
         if stats['answer_block_geoip'] > 0 or stats['answer_drop_geoip'] > 0:
-            logger.debug(f"GeoIP rules active: {stats['answer_block_geoip']} BLOCK, {stats['answer_drop_geoip']} DROP")
+            logger.info(
+                f"🌍 GEO-IP rules active: "
+                f"{stats['answer_block_geoip']} BLOCK, "
+                f"{stats['answer_drop_geoip']} DROP"
+            )
+            
+            # Log individual rules for debugging
+            if stats['answer_block_geoip'] > 0:
+                logger.debug(f"  BLOCK GEO-IP rules:")
+                for location_spec, rule, list_name in self.answer_block_geoip:
+                    logger.debug(f"    - {rule} (location: {location_spec}, list: {list_name})")
+            
+            if stats['answer_drop_geoip'] > 0:
+                logger.debug(f"  DROP GEO-IP rules:")
+                for location_spec, rule, list_name in self.answer_drop_geoip:
+                    logger.debug(f"    - {rule} (location: {location_spec}, list: {list_name})")
+        else:
+            logger.debug("No GEO-IP rules loaded")
         
         return stats
+
+    def check_category(self, qname_norm: str):
+        if not self.categorizer or not self.category_rules: 
+            return "PASS", None, None
+        
+        categories = self.categorizer.classify(qname_norm)
+        
+        for cat, score in categories.items():
+            if cat in self.category_rules:
+                rule = self.category_rules[cat]
+                action = rule.get('action', 'PASS').upper()
+                threshold = rule.get('threshold', 80)
+                
+                if score >= threshold:
+                    logger.debug(
+                        f"Category '{cat}' matched with score {score} "
+                        f"(threshold: {threshold}), action: {action}"
+                    )
+                    return action, f"Category:{cat}(score={score})", "CategoryFilter"
+        
+        return "PASS", None, None
 

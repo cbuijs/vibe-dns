@@ -495,111 +495,117 @@ class DNSHandler:
             req_logger.debug("Round Robin: Shuffled A/AAAA answer records")
 
     def _log_response(self, response: dns.message.Message, req_logger):
+        """Enhanced response logging with GEO-IP information for all A/AAAA records"""
         if not req_logger.isEnabledFor(logging.DEBUG):
             return
-        
+    
         rcode = dns.rcode.to_text(response.rcode())
         answer_count = len(response.answer)
         authority_count = len(response.authority)
         additional_count = len(response.additional)
-        
+    
         req_logger.debug(
             f"RESPONSE: RCODE={rcode} | "
             f"Answers={answer_count}, Authority={authority_count}, Additional={additional_count}"
         )
-        
+    
         if answer_count > 0:
             req_logger.debug("  Answer Section:")
             for i, rrset in enumerate(response.answer, 1):
                 qtype_name = dns.rdatatype.to_text(rrset.rdtype)
                 ttl = rrset.ttl
                 record_count = len(rrset)
-                
+            
                 req_logger.debug(
                     f"    [{i}/{answer_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
                 )
-                
-                for j, rdata in enumerate(rrset, 1):
-                    rdata_text = rdata.to_text()
-                    req_logger.debug(f"      • {rdata_text}")
-        
+            
+                # Enhanced: Add GEO-IP info for A/AAAA records
+                if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
+                    for j, rdata in enumerate(rrset, 1):
+                        ip_text = rdata.to_text()
+                    
+                        # Get GEO-IP info if enabled
+                        geo_suffix = ""
+                        if self.geoip and self.geoip.enabled:
+                            geo = self.geoip.lookup(ip_text)
+                            if geo:
+                                country_code = geo.get('country_code', '??')
+                                country_name = geo.get('country_name', 'Unknown')
+                                continent_code = geo.get('continent_code', '??')
+                                geo_suffix = f" 🌍 {country_code} ({country_name}) in {continent_code}"
+                    
+                        req_logger.debug(f"      • {ip_text}{geo_suffix}")
+                else:
+                    # Non-IP records
+                    for j, rdata in enumerate(rrset, 1):
+                        rdata_text = rdata.to_text()
+                        req_logger.debug(f"      • {rdata_text}")
+    
         if authority_count > 0:
             req_logger.debug("  Authority Section:")
             for i, rrset in enumerate(response.authority, 1):
                 qtype_name = dns.rdatatype.to_text(rrset.rdtype)
                 ttl = rrset.ttl
                 record_count = len(rrset)
-                
+            
                 req_logger.debug(
                     f"    [{i}/{authority_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
                 )
-                
-                for j, rdata in enumerate(rrset, 1):
-                    rdata_text = rdata.to_text()
-                    req_logger.debug(f"      • {rdata_text}")
-        
+            
+                # Enhanced: Add GEO-IP info for A/AAAA records in authority
+                if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
+                    for j, rdata in enumerate(rrset, 1):
+                        ip_text = rdata.to_text()
+                    
+                        geo_suffix = ""
+                        if self.geoip and self.geoip.enabled:
+                            geo = self.geoip.lookup(ip_text)
+                            if geo:
+                                country_code = geo.get('country_code', '??')
+                                country_name = geo.get('country_name', 'Unknown')
+                                continent_code = geo.get('continent_code', '??')
+                                geo_suffix = f" 🌍 {country_code} ({country_name}) in {continent_code}"
+                    
+                        req_logger.debug(f"      • {ip_text}{geo_suffix}")
+                else:
+                    for j, rdata in enumerate(rrset, 1):
+                        rdata_text = rdata.to_text()
+                        req_logger.debug(f"      • {rdata_text}")
+    
         if additional_count > 0:
             req_logger.debug("  Additional Section:")
             for i, rrset in enumerate(response.additional, 1):
                 if rrset.rdtype == dns.rdatatype.OPT:
                     continue
-                
+            
                 qtype_name = dns.rdatatype.to_text(rrset.rdtype)
                 ttl = rrset.ttl
                 record_count = len(rrset)
-                
+            
                 req_logger.debug(
                     f"    [{i}/{additional_count}] {rrset.name} {ttl}s {qtype_name} ({record_count} record{'s' if record_count != 1 else ''})"
                 )
-                
-                for j, rdata in enumerate(rrset, 1):
-                    rdata_text = rdata.to_text()
-                    req_logger.debug(f"      • {rdata_text}")
-        
-        if response.edns >= 0:
-            edns_info = []
-            edns_info.append(f"Version={response.edns}")
-            edns_info.append(f"Payload={response.payload}")
             
-            if response.options:
-                option_names = []
-                for opt in response.options:
-                    if isinstance(opt, dns.edns.ECSOption):
-                        option_names.append(f"ECS({opt.address}/{opt.srclen})")
-                    elif isinstance(opt, dns.edns.GenericOption):
-                        if opt.otype == 65001:
-                            try:
-                                mac = ":".join(f"{b:02x}" for b in opt.data).upper()
-                                option_names.append(f"MAC({mac})")
-                            except:
-                                option_names.append(f"MAC(invalid)")
-                        else:
-                            option_names.append(f"Option({opt.otype})")
-                    elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
-                        option_names.append("Cookie")
-                    else:
-                        option_names.append(f"Unknown({type(opt).__name__})")
-                
-                edns_info.append(f"Options=[{', '.join(option_names)}]")
-            
-            req_logger.debug(f"  EDNS: {' | '.join(edns_info)}")
-        
-        flags = []
-        if response.flags & dns.flags.AA:
-            flags.append("AA")
-        if response.flags & dns.flags.TC:
-            flags.append("TC")
-        if response.flags & dns.flags.RD:
-            flags.append("RD")
-        if response.flags & dns.flags.RA:
-            flags.append("RA")
-        if response.flags & dns.flags.AD:
-            flags.append("AD")
-        if response.flags & dns.flags.CD:
-            flags.append("CD")
-        
-        if flags:
-            req_logger.debug(f"  Flags: {' '.join(flags)}")
+                # Enhanced: Add GEO-IP info for A/AAAA records in additional
+                if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
+                    for j, rdata in enumerate(rrset, 1):
+                        ip_text = rdata.to_text()
+                    
+                        geo_suffix = ""
+                        if self.geoip and self.geoip.enabled:
+                            geo = self.geoip.lookup(ip_text)
+                            if geo:
+                                country_code = geo.get('country_code', '??')
+                                country_name = geo.get('country_name', 'Unknown')
+                                continent_code = geo.get('continent_code', '??')
+                                geo_suffix = f" 🌍 {country_code} ({country_name}) in {continent_code}"
+                    
+                        req_logger.debug(f"      • {ip_text}{geo_suffix}")
+                else:
+                    for j, rdata in enumerate(rrset, 1):
+                        rdata_text = rdata.to_text()
+                        req_logger.debug(f"      • {rdata_text}")
 
 
     async def process_query(self, data, client_addr, meta=None):
@@ -768,7 +774,7 @@ class DNSHandler:
         if engine:
             matched_category = None
             if self.categorization_enabled and engine.categorizer:
-                 cat_results = engine.categorizer.categorize(qname_norm)
+                 cat_results = engine.categorizer.classify(qname_norm)
                  for cat, score in cat_results.items():
                      if engine.category_rules and cat in engine.category_rules:
                          rule = engine.category_rules[cat]

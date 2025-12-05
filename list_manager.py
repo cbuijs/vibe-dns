@@ -209,44 +209,51 @@ class ListManager:
         return valid_rules
 
     def compile_policy(self, policy_name, policy_config):
+        """Compile policy with enhanced GEO-IP rule tracking"""
         from filtering import RuleEngine, DomainCategorizer
         engine = RuleEngine()
         engine.categorizer = DomainCategorizer(self.categories_file)
-        
+    
         logger.info(f"Compiling Policy: {policy_name}")
 
         def apply_rules(list_names, mode):
             count = 0
+            geoip_count = 0
             for lname in list_names:
                 rules_set = self.lists_data.get(lname, set())
                 logger.debug(f"  - Applying list '{lname}' ({len(rules_set)} rules) as {mode}")
                 for r in rules_set: 
-                    engine.add_rule(r, mode, list_name=lname)
+                    result = engine.add_rule(r, mode, list_name=lname)
+                    if result == 'geoip':
+                        geoip_count += 1
                 count += len(rules_set)
-            return count
+            return count, geoip_count
 
         a_count = 0
         b_count = 0
         d_count = 0
-        
+        geoip_count = 0
+    
         if 'allow' in policy_config: 
             logger.debug(f"Processing Allow lists for {policy_name}: {policy_config['allow']}")
-            a_count = apply_rules(policy_config['allow'], 'allow')
-        
+            a_count, _ = apply_rules(policy_config['allow'], 'allow')
+    
         if 'block' in policy_config: 
             logger.debug(f"Processing Block lists for {policy_name}: {policy_config['block']}")
-            b_count = apply_rules(policy_config['block'], 'block')
-        
+            b_count, block_geoip = apply_rules(policy_config['block'], 'block')
+            geoip_count += block_geoip
+    
         if 'drop' in policy_config:
             logger.debug(f"Processing Drop lists for {policy_name}: {policy_config['drop']}")
-            d_count = apply_rules(policy_config['drop'], 'drop')
-        
+            d_count, drop_geoip = apply_rules(policy_config['drop'], 'drop')
+            geoip_count += drop_geoip
+    
         allowed_types = policy_config.get('allowed_types', [])
         blocked_types = policy_config.get('blocked_types', [])
         dropped_types = policy_config.get('dropped_types', [])
-        
+    
         engine.set_type_filters(allowed_types, blocked_types, dropped_types)
-        
+    
         if allowed_types: 
             logger.debug(f"  - Allowed QTypes: {allowed_types}")
         if blocked_types: 
@@ -258,6 +265,16 @@ class ListManager:
             engine.set_category_rules(policy_config['category_rules'])
             logger.debug(f"  - Category Rules: {list(policy_config['category_rules'].keys())}")
 
-        logger.info(f"Policy '{policy_name}' Ready: {b_count} Block, {d_count} Drop, {a_count} Allow rules active.")
+        # Enhanced summary with GEO-IP stats
+        summary = f"Policy '{policy_name}' Ready: {b_count} Block, {d_count} Drop, {a_count} Allow rules"
+        if geoip_count > 0:
+            summary += f" | 🌍 {geoip_count} GEO-IP rules"
+            logger.info(f"✓ {summary}")
+        else:
+            logger.info(f"✓ {summary}")
+        
+        # Call get_stats to trigger detailed GEO-IP logging
+        stats = engine.get_stats()
+    
         return engine
 
