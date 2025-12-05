@@ -1013,7 +1013,7 @@ class DNSHandler:
              reply.set_rcode(dns.rcode.SERVFAIL)
              return reply
         
-        if engine and self.match_answers_globally:
+        if engine and (self.match_answers_globally or engine.has_answer_only_rules()):
             for section in (response.answer, response.authority, response.additional):
                 safe_rrsets = []
                 for rrset in section:

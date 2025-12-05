@@ -412,6 +412,15 @@ class RuleEngine:
         
         return "PASS", None, None
     
+    def has_answer_only_rules(self):
+        """Check if engine has any answer-only rules (GeoIP, @IP, @domain)"""
+        return bool(
+            self.answer_block_geoip or self.answer_drop_geoip or
+            self.answer_block_ips or self.answer_drop_ips or
+            self.answer_block_trie.root or self.answer_drop_trie.root or
+            self.answer_block_regex or self.answer_drop_regex
+        )
+
     def get_stats(self) -> dict:
         stats = {
             'allow_domains': len(self.allow_trie.root),

@@ -423,17 +423,17 @@ class GeoIPLookup:
                     return False
         
         # Fallback: direct name matching
-        country_name = geo.get('country_name', '').upper()
+        country_name = (geo.get('country_name') or '').upper()
         if country_name == location_upper:
             logger.info(f"✓ GeoIP: {ip_str} matches {location_spec} (country name match)")
             return True
         
-        continent_name = geo.get('continent_name', '').upper() if geo.get('continent_name') else ''
+        continent_name = (geo.get('continent_name') or '').upper()
         if continent_name == location_upper:
             logger.info(f"✓ GeoIP: {ip_str} matches {location_spec} (continent name match)")
             return True
         
-        continent_code = geo.get('continent_code', '').upper()
+        continent_code = (geo.get('continent_code') or '').upper()
         if continent_code == location_upper:
             logger.info(f"✓ GeoIP: {ip_str} matches {location_spec} (continent code match)")
             return True
