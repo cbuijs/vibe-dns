@@ -2,16 +2,10 @@
 # filename: list_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 3.5.2 (Bug Fixes) + OPTIMIZED
+# Version: 4.0.0 (DROP Action + GeoIP)
 # -----------------------------------------------------------------------------
 """
-List Management Module.
-
-Updates:
-- Added domain format validation
-- Improved error handling
-- Better logging for invalid entries
-- OPTIMIZED: Uses validation module instead of duplicate _is_valid_domain
+List Management Module with DROP action and GeoIP support.
 """
 
 import os
@@ -76,10 +70,6 @@ class ListManager:
         return None
 
     async def update_lists(self, list_config):
-        """
-        Updates all configured lists. 
-        Checks cache first, then downloads if needed.
-        """
         if not list_config:
             logger.info("No lists configured.")
             return
@@ -161,13 +151,19 @@ class ListManager:
             if not line or line.startswith('#') or line.startswith('!'): 
                 continue
             
-            # Allow @ for Answer blocking, / for regex
+            # Allow @ for Answer blocking and GeoIP
             clean_check = line[1:] if line.startswith('@') else line
+            
+            # GeoIP rules: @@COUNTRY, @@CONTINENT
+            if clean_check.startswith('@'):
+                valid_rules.add(line)
+                continue
+            
+            # Regex rules
             if clean_check.startswith('/') and clean_check.endswith('/'):
                 valid_rules.add(line)
                 continue
             
-            # Remove inline comments
             if '#' in line: 
                 line = line.split('#')[0].strip()
             
@@ -177,38 +173,29 @@ class ListManager:
             
             domain = None
             
-            # 1. Hosts format: "0.0.0.0 example.com"
             if parts[0] in ['0.0.0.0', '127.0.0.1', '::']:
                 if len(parts) >= 2: 
                     domain = parts[1]
-            
-            # 2. Raw domain format: "example.com"
             elif len(parts) == 1:
                 domain = parts[0]
-            
-            # 3. Space separated lists: "example.com example.org"
             else:
                 domain = parts[0] 
 
             if domain:
-                # Clean up domain
                 domain = domain.lower().strip()
                 
-                # Skip if it's an IP address (common in hosts files)
                 try:
                     ipaddress.ip_address(domain)
-                    continue  # Skip IPs
+                    continue
                 except ValueError:
-                    pass  # Not an IP, continue processing
+                    pass
                 
-                # Validate domain format - OPTIMIZED: Uses validation module
                 if not is_valid_domain(domain, allow_underscores=False):
                     invalid_count += 1
-                    if invalid_count <= 10:  # Log first 10 invalid entries
+                    if invalid_count <= 10:
                         logger.debug(f"Invalid domain on line {line_num}: {domain}")
                     continue
                 
-                # Apply domain type logic
                 if hosts_domain_type == 'inclusive' and not domain.startswith('.'):
                     domain = '.' + domain
                 elif hosts_domain_type == 'exclusive' and not domain.startswith('*.'):
@@ -240,6 +227,8 @@ class ListManager:
 
         a_count = 0
         b_count = 0
+        d_count = 0
+        
         if 'allow' in policy_config: 
             logger.debug(f"Processing Allow lists for {policy_name}: {policy_config['allow']}")
             a_count = apply_rules(policy_config['allow'], 'allow')
@@ -248,19 +237,27 @@ class ListManager:
             logger.debug(f"Processing Block lists for {policy_name}: {policy_config['block']}")
             b_count = apply_rules(policy_config['block'], 'block')
         
+        if 'drop' in policy_config:
+            logger.debug(f"Processing Drop lists for {policy_name}: {policy_config['drop']}")
+            d_count = apply_rules(policy_config['drop'], 'drop')
+        
         allowed_types = policy_config.get('allowed_types', [])
         blocked_types = policy_config.get('blocked_types', [])
-        engine.set_type_filters(allowed_types, blocked_types)
+        dropped_types = policy_config.get('dropped_types', [])
+        
+        engine.set_type_filters(allowed_types, blocked_types, dropped_types)
         
         if allowed_types: 
             logger.debug(f"  - Allowed QTypes: {allowed_types}")
         if blocked_types: 
             logger.debug(f"  - Blocked QTypes: {blocked_types}")
+        if dropped_types:
+            logger.debug(f"  - Dropped QTypes: {dropped_types}")
 
         if 'category_rules' in policy_config:
             engine.set_category_rules(policy_config['category_rules'])
             logger.debug(f"  - Category Rules: {list(policy_config['category_rules'].keys())}")
 
-        logger.info(f"Policy '{policy_name}' Ready: {b_count} Block rules, {a_count} Allow rules active.")
+        logger.info(f"Policy '{policy_name}' Ready: {b_count} Block, {d_count} Drop, {a_count} Allow rules active.")
         return engine
 

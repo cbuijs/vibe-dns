@@ -2,16 +2,16 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 5.0.0 (Optimized - Consolidated Caches + Domain Normalization)
+# Version: 5.1.0 (GeoIP Integration + Optimized)
 # -----------------------------------------------------------------------------
 """
-Core DNS Resolution & Processing Logic.
+Core DNS Resolution & Processing Logic with GeoIP support.
 
-Major Changes (v5.0.0):
+Major Changes (v5.1.0):
+- GeoIP integration for client identification and answer filtering
 - Uses LRUCache base class for both DNS and Decision caches
 - Domain normalization at entry point (single location)
-- Eliminated duplicate lowercase/strip operations throughout pipeline
-- Reduced memory overhead with shared cache infrastructure
+- Fixed type filter logic (allowed_types + dropped_types)
 """
 
 import asyncio
@@ -113,51 +113,23 @@ class RequestDeduplicator:
 
 
 class DecisionCache(LRUCache):
-    """
-    Cache filtering decisions using shared LRU infrastructure.
-    Stores allow/block decisions with reasons, rules, and lists.
-    """
+    """Cache filtering decisions using shared LRU infrastructure"""
     
     def __init__(self, size=50000, ttl=300):
         super().__init__(max_size=size, default_ttl=ttl)
         logger.info(f"Decision Cache initialized: size={size}, TTL={ttl}s, LRU eviction enabled")
     
     def get_decision(self, qname_norm: str, qtype: int, group: str, policy: str) -> Optional[dict]:
-        """
-        Get cached decision for a query.
-        
-        Args:
-            qname_norm: NORMALIZED domain name (already lowercased/stripped)
-            qtype: Query type
-            group: Client group
-            policy: Policy name
-            
-        Returns:
-            dict with {'action', 'reason', 'rule', 'list', 'category'} or None
-        """
         key = (qname_norm, qtype, group, policy)
         return self.get(key)
     
     def put_decision(self, qname_norm: str, qtype: int, group: str, policy: str, decision: dict):
-        """
-        Store a filtering decision.
-        
-        Args:
-            qname_norm: NORMALIZED domain name (already lowercased/stripped)
-            qtype: Query type
-            group: Client group
-            policy: Policy name
-            decision: dict with 'action', 'reason', 'rule', 'list', 'category'
-        """
         key = (qname_norm, qtype, group, policy)
         self.put(key, decision)
 
 
 class DNSCache(LRUCache):
-    """
-    In-memory DNS cache using shared LRU infrastructure.
-    Keys are: (qname_norm, qtype, group, scope) to ensure group isolation.
-    """
+    """In-memory DNS cache using shared LRU infrastructure"""
     
     def __init__(self, size, ttl_margin, negative_ttl, gc_interval=300, prefetch_min_hits=3):
         super().__init__(max_size=size, default_ttl=negative_ttl)
@@ -165,15 +137,12 @@ class DNSCache(LRUCache):
         self.negative_ttl = negative_ttl or 60
         self.gc_interval = gc_interval
         self.prefetch_min_hits = prefetch_min_hits
-        
-        # Extended tracking for prefetch
         self.hit_counts: dict[tuple, int] = {}
         
         asyncio.create_task(self.gc_loop())
         logger.info(f"DNS Cache initialized: size={size}, LRU eviction enabled")
 
     async def gc_loop(self):
-        """Periodic cleanup of expired entries"""
         while True:
             await asyncio.sleep(self.gc_interval)
             expired = self.cleanup_expired()
@@ -181,44 +150,27 @@ class DNSCache(LRUCache):
                 logger.debug(f"Cache GC: Removed {expired} expired entries. Total: {len(self.cache)}/{self.max_size}")
 
     def get_dns(self, qname_norm: str, qtype: int, group: str = "default", scope: str = "DEFAULT") -> tuple[dns.message.Message | None, float, int]:
-        """
-        Get DNS response from cache.
-    
-        Args:
-            qname_norm: NORMALIZED domain name (already lowercased/stripped)
-            qtype: Query type
-            group: Client group
-            scope: Policy scope
-        
-        Returns:
-            (message, ttl_remaining, hit_count)
-        """
         key = (qname_norm, qtype, group, scope)
-    
-        # Access cache directly to handle tuple properly
+        
         if key not in self.cache:
             self.stats.record_miss()
             return None, 0, 0
-    
-        # Move to end (LRU)
+        
         self.cache.move_to_end(key)
-    
-        # Unpack the stored tuple
         record_bytes, expires = self.cache[key]
         now = time.time()
         ttl_remain = expires - now
-    
+        
         if ttl_remain <= 0:
             del self.cache[key]
             self.stats.record_expiration()
             self.stats.record_miss()
             return None, 0, 0
-    
-        # Track hits for prefetch
+        
         self.hit_counts[key] = self.hit_counts.get(key, 0) + 1
         hits = self.hit_counts[key]
         self.stats.record_hit()
-    
+        
         try:
             msg = dns.message.from_wire(record_bytes)
             for section in (msg.answer, msg.authority, msg.additional):
@@ -232,18 +184,6 @@ class DNSCache(LRUCache):
 
     def put_dns(self, message: dns.message.Message, qname_norm: str, qtype: int, group: str = "default", 
                 scope: str = "DEFAULT", forced_ttl: int | None = None, req_logger=logger):
-        """
-        Store DNS response in cache.
-        
-        Args:
-            message: DNS message to cache
-            qname_norm: NORMALIZED domain name (already lowercased/stripped)
-            qtype: Query type
-            group: Client group
-            scope: Policy scope
-            forced_ttl: Override TTL
-            req_logger: Logger instance
-        """
         if self.max_size == 0: 
             return
         
@@ -257,29 +197,24 @@ class DNSCache(LRUCache):
             min_ttl = min(ttls) if ttls else self.negative_ttl
         
         key = (qname_norm, qtype, group, scope)
-        
-        # Store as (wire_format, expires_timestamp)
         wire = message.to_wire()
         self.put(key, wire, ttl=min_ttl)
         
         req_logger.debug(f"Cache Write [{group}/{scope}]: {qname_norm} TTL={int(min_ttl)}s (Total: {len(self.cache)}/{self.max_size})")
     
     def should_prefetch(self, key: tuple, ttl_remain: float) -> bool:
-        """Check if entry should be prefetched"""
         if self.margin <= 0:
             return False
         if ttl_remain >= self.margin:
             return False
-        
         hits = self.hit_counts.get(key, 0)
         return hits >= self.prefetch_min_hits
 
 
 class DNSHandler:
-    # Maximum CNAME chain depth to prevent loops
     MAX_CNAME_DEPTH = 16
     
-    def __init__(self, config, policy_map, default_policy, rule_engines, groups, mac_mapper, upstream, cache):
+    def __init__(self, config, policy_map, default_policy, rule_engines, groups, mac_mapper, upstream, cache, geoip=None):
         self.config = config or {}
         self.policy_map = policy_map or {}
         self.rule_engines = rule_engines or {}
@@ -287,6 +222,7 @@ class DNSHandler:
         self.mac_mapper = mac_mapper
         self.upstream = upstream
         self.cache = cache
+        self.geoip = geoip
         self.schedules = self.config.get('schedules') or {}
         
         response_cfg = self.config.get('response') or {}
@@ -302,7 +238,6 @@ class DNSHandler:
         self.deduplicator = RequestDeduplicator(dedup_cfg.get('enabled', True))
         self.DEFAULT_POLICY_SCOPE = "DEFAULT_CACHE"
         
-        # Initialize Decision Cache using consolidated LRU infrastructure
         decision_cache_cfg = self.config.get('decision_cache', {})
         decision_cache_size = decision_cache_cfg.get('size', 50000)
         decision_cache_ttl = decision_cache_cfg.get('ttl', 300)
@@ -313,7 +248,12 @@ class DNSHandler:
         self.forward_ecs_mode = server_cfg.get('forward_ecs_mode', 'none').lower()
         self.forward_mac_mode = server_cfg.get('forward_mac_mode', 'none').lower()
         
-        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}, AnswerMatching: {self.match_answers_globally}, DecisionCache: {decision_cache_size} entries")
+        if self.geoip and self.geoip.enabled:
+            logger.info(f"DNSHandler Ready. GeoIP: ENABLED, BlockMode: {self.ip_block_mode}")
+        else:
+            logger.info(f"DNSHandler Ready. GeoIP: DISABLED, BlockMode: {self.ip_block_mode}")
+        
+        logger.info(f"AnswerMatching: {self.match_answers_globally}, DecisionCache: {decision_cache_size} entries")
 
     def identify_client(self, addr, meta, req_logger) -> str | None:
         source_ip = addr[0]
@@ -353,6 +293,36 @@ class DNSHandler:
                 if '/' in ident and not ident.startswith('path:') and is_ip_in_network(match_ip, ident):
                     req_logger.info(f"Client identified as group '{gname}'. Reason: IP '{match_ip}' is in Subnet '{ident}'")
                     return gname
+                
+                # GeoIP matching
+                if ident.startswith('geoip:'):
+                    if self.geoip and self.geoip.enabled:
+                        location = ident[6:]
+                        req_logger.debug(f"Testing GeoIP identifier: geoip:{location}")
+                        
+                        if self.geoip.match_location(match_ip, location):
+                            req_logger.info(
+                                f"✓ Client identified as group '{gname}' | "
+                                f"Reason: GeoIP Match | "
+                                f"IP: {match_ip} | "
+                                f"Location: {location}"
+                            )
+                            
+                            if req_logger.isEnabledFor(logging.DEBUG):
+                                geo = self.geoip.lookup(match_ip)
+                                if geo:
+                                    req_logger.debug(
+                                        f"  GeoIP details: {geo.get('country_code')} "
+                                        f"({geo.get('country_name')}) in "
+                                        f"{geo.get('continent_code')}"
+                                    )
+                            
+                            return gname
+                        else:
+                            req_logger.debug(f"  GeoIP: {match_ip} does not match {location}")
+                    else:
+                        if ident.startswith('geoip:'):
+                            req_logger.debug(f"GeoIP identifier '{ident}' skipped (GeoIP disabled)")
         
         return None
 
@@ -409,7 +379,6 @@ class DNSHandler:
         return reply
 
     def collapse_cnames(self, response: dns.message.Message, req_logger):
-        """Collapse CNAME chains with enhanced loop detection"""
         response_cfg = self.config.get('response') or {}
         if not response_cfg.get('cname_collapse', True): 
             return
@@ -526,7 +495,6 @@ class DNSHandler:
             req_logger.debug("Round Robin: Shuffled A/AAAA answer records")
 
     def _log_response(self, response: dns.message.Message, req_logger):
-        """Log detailed response information at DEBUG level"""
         if not req_logger.isEnabledFor(logging.DEBUG):
             return
         
@@ -650,11 +618,8 @@ class DNSHandler:
         client_ip = client_addr[0]
         if meta is None: meta = {}
 
-        # === DOMAIN NORMALIZATION AT ENTRY POINT ===
-        # Single location for all domain normalization
         qname_norm = normalize_domain(qname_str)
         
-        # --- EDNS Parsing & Filtering ---
         ecs_ip = None
         edns_mac = None
         
@@ -706,7 +671,6 @@ class DNSHandler:
         group_key = group if group else "default"
         policy_name = self.get_active_policy(group, req_logger)
         
-        # --- Decision Cache Check (using normalized domain) ---
         cached_decision = self.decision_cache.get_decision(qname_norm, qtype, group_key, policy_name)
         if cached_decision:
             action = cached_decision['action']
@@ -734,8 +698,16 @@ class DNSHandler:
                     f"Policy: '{policy_name}'"
                     f"{f' | Category: {category}' if category else ''}"
                 )
+            elif action == 'DROP':
+                req_logger.info(
+                    f"🔇 DROPPED (Decision Cache Hit) | "
+                    f"Reason: {reason} | "
+                    f"Rule: '{rule}' | "
+                    f"List: '{list_name}' | "
+                    f"Policy: '{policy_name}'"
+                )
+                return None
         
-        # --- DNS Cache Check (using normalized domain) ---
         cached_msg, ttl_remain, hits = self.cache.get_dns(qname_norm, qtype, group=group_key, scope=policy_name)
         if cached_msg:
             req_logger.info(f"CACHE HIT [{group_key}/{policy_name}]: TTL={int(ttl_remain)}s")
@@ -757,7 +729,6 @@ class DNSHandler:
                 payload = cached_msg.payload if cached_msg.payload >= 512 else 1232
                 cached_msg.use_edns(edns=edns_ver, ednsflags=cached_msg.ednsflags, options=filtered_options, payload=payload)
             
-            # Check for prefetch (using cache method)
             cache_key = (qname_norm, qtype, group_key, policy_name)
             if self.cache.should_prefetch(cache_key, ttl_remain):
                 req_logger.debug(f"Prefetching {qname_norm} (Hits: {hits})")
@@ -769,7 +740,6 @@ class DNSHandler:
         else:
             req_logger.debug(f"CACHE MISS [{group_key}/{policy_name}]: {qname_norm}")
 
-        # --- Rate Limit Check ---
         limit_action = self.rate_limiter.check(log_ip, meta.get('proto', 'udp'))
         if limit_action == "DROP": 
             req_logger.warning("Rate Limit Exceeded: Dropping query")
@@ -780,7 +750,6 @@ class DNSHandler:
             reply.flags |= dns.flags.TC
             return reply.to_wire()
 
-        # --- Policy Check (Phase 1: Domain/Type) - Store Decision ---
         if policy_name == "BLOCK":
             req_logger.info(f"⛔ BLOCKED | Reason: Schedule Policy | Schedule: {group} | Policy: BLOCK")
             
@@ -797,7 +766,6 @@ class DNSHandler:
 
         engine = self.rule_engines.get(policy_name)
         if engine:
-            # Categorization (using normalized domain)
             matched_category = None
             if self.categorization_enabled and engine.categorizer:
                  cat_results = engine.categorizer.categorize(qname_norm)
@@ -839,11 +807,28 @@ class DNSHandler:
                                      'category': matched_category
                                  }
                                  self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
+                             elif action == 'DROP':
+                                 req_logger.info(
+                                     f"🔇 DROPPED | Reason: Category Match | "
+                                     f"Category: '{cat}' | Confidence: {score}% | "
+                                     f"Policy: '{policy_name}'"
+                                 )
+                                 
+                                 decision = {
+                                     'action': 'DROP',
+                                     'reason': 'Category Match',
+                                     'rule': f"Category: {cat}",
+                                     'list': policy_name,
+                                     'category': f"{cat} ({score}%)"
+                                 }
+                                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
+                                 
+                                 return None
                      else:
                          req_logger.debug(f"Category: '{cat}' (Confidence: {score}%)")
             
-            blocked_type, reason, _ = engine.check_type(qtype)
-            if blocked_type: 
+            action_type, reason, _ = engine.check_type(qtype)
+            if action_type == "BLOCK":
                 req_logger.info(
                     f"⛔ BLOCKED | Reason: Query Type Filter | "
                     f"Type: {dns.rdatatype.to_text(qtype)} | "
@@ -860,8 +845,24 @@ class DNSHandler:
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
                 
                 return self.create_block_response(request, qname, qtype).to_wire()
+            elif action_type == "DROP":
+                req_logger.info(
+                    f"🔇 DROPPED | Reason: Query Type Filter | "
+                    f"Type: {dns.rdatatype.to_text(qtype)} | "
+                    f"Policy: '{policy_name}' | Details: {reason}"
+                )
+                
+                decision = {
+                    'action': 'DROP',
+                    'reason': 'Query Type Filter',
+                    'rule': f"Type: {dns.rdatatype.to_text(qtype)}",
+                    'list': policy_name,
+                    'category': ''
+                }
+                self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
+                
+                return None
 
-            # Domain blocking check (using normalized domain)
             action, rule, list_name = engine.is_blocked(qname_norm)
             if action == "BLOCK":
                 req_logger.info(
@@ -899,11 +900,32 @@ class DNSHandler:
                     'category': ''
                 }
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
+            elif action == "DROP":
+                req_logger.info(
+                    f"🔇 DROPPED | Reason: Domain Rule | "
+                    f"Domain: {qname_norm} | "
+                    f"Rule: '{rule}' | "
+                    f"List: '{list_name}' | "
+                    f"Policy: '{policy_name}'"
+                )
+                
+                decision = {
+                    'action': 'DROP',
+                    'reason': 'Domain Rule',
+                    'rule': rule,
+                    'list': list_name,
+                    'category': ''
+                }
+                self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
+                
+                return None
 
-        # --- Upstream Resolution ---
         dedup_key = (qname_norm, qtype, policy_name, group_key)
         final_msg = await self.deduplicator.get_or_process(dedup_key, 
             lambda: self._resolve_upstream(qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key))
+        
+        if final_msg is None:
+            return None
         
         self.round_robin_answers(final_msg, req_logger)
         final_msg.id = qid
@@ -928,18 +950,11 @@ class DNSHandler:
         return final_msg.to_wire()
 
     async def _resolve_upstream(self, qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default"):
-        """
-        Resolve query via upstream.
-        
-        Args:
-            qname_norm: NORMALIZED domain name (already lowercased/stripped)
-        """
         upstream_group = "Default"
         policies = self.config.get('policies') or {}
         if policy_name in policies:
              upstream_group = policies[policy_name].get('upstream_group', "Default")
         
-        # --- Native EDNS Forwarding Logic ---
         opts_to_keep = []
         for opt in request.options:
             if isinstance(opt, dns.edns.ECSOption):
@@ -992,43 +1007,52 @@ class DNSHandler:
              reply.set_rcode(dns.rcode.SERVFAIL)
              return reply
         
-        # --- Policy Check (Phase 2: Answers/IPs) - using normalized domains ---
         if engine and self.match_answers_globally:
             for section in (response.answer, response.authority, response.additional):
                 safe_rrsets = []
                 for rrset in section:
-                    is_bad = False
+                    matched_action = None
                     matched_rule = None
                     matched_list = None
                     matched_target = None
                     
                     if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
                         for rdata in rrset:
-                             is_bad, rule, lst = engine.check_answer(None, rdata.to_text())
-                             if is_bad:
-                                 matched_rule = rule
-                                 matched_list = lst
-                                 matched_target = rdata.to_text()
-                                 req_logger.info(
-                                     f"⛔ BLOCKED | Reason: Answer IP Match | "
-                                     f"IP: {matched_target} | "
-                                     f"Rule: '{matched_rule}' | "
-                                     f"List: '{matched_list}' | "
-                                     f"Policy: '{policy_name}' | "
-                                     f"Type: {dns.rdatatype.to_text(rrset.rdtype)}"
-                                 )
-                                 break
+                            ip_text = rdata.to_text()
+                            req_logger.debug(f"Checking answer IP: {ip_text}")
+                            
+                            matched_action, matched_rule, matched_list = engine.check_answer(None, ip_text, self.geoip)
+                            if matched_action and matched_action != "PASS":
+                                matched_target = ip_text
+                                req_logger.info(
+                                    f"{'⛔ BLOCKED' if matched_action == 'BLOCK' else '🔇 DROPPED'} | "
+                                    f"Reason: Answer IP Match | "
+                                    f"IP: {matched_target} | "
+                                    f"Rule: '{matched_rule}' | "
+                                    f"List: '{matched_list}' | "
+                                    f"Policy: '{policy_name}' | "
+                                    f"Type: {dns.rdatatype.to_text(rrset.rdtype)}"
+                                )
+                                
+                                if matched_rule.startswith('@@') and self.geoip:
+                                    geo = self.geoip.lookup(matched_target)
+                                    if geo:
+                                        req_logger.debug(
+                                            f"  GeoIP: {matched_target} -> {geo.get('country_code')} "
+                                            f"({geo.get('country_name')}) in {geo.get('continent_code')}"
+                                        )
+                                
+                                break
+                                
                     elif rrset.rdtype in [dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.PTR]:
                         for rdata in rrset:
-                            # Normalize target domain before checking
                             target_norm = normalize_domain(str(rdata.target))
-                            is_bad, rule, lst = engine.check_answer(target_norm, None)
-                            if is_bad:
-                                matched_rule = rule
-                                matched_list = lst
+                            matched_action, matched_rule, matched_list = engine.check_answer(target_norm, None, self.geoip)
+                            if matched_action and matched_action != "PASS":
                                 matched_target = target_norm
                                 req_logger.info(
-                                    f"⛔ BLOCKED | Reason: Answer Domain Match | "
+                                    f"{'⛔ BLOCKED' if matched_action == 'BLOCK' else '🔇 DROPPED'} | "
+                                    f"Reason: Answer Domain Match | "
                                     f"Domain: {matched_target} | "
                                     f"Rule: '{matched_rule}' | "
                                     f"List: '{matched_list}' | "
@@ -1037,17 +1061,17 @@ class DNSHandler:
                                 )
                                 break
                     
-                    if is_bad:
-                         if self.ip_block_mode == 'block':
-                             req_logger.info(
-                                 f"⛔ BLOCKED | Reason: Answer Match - Full Response Blocked | "
-                                 f"Trigger: {matched_target} | "
-                                 f"Rule: '{matched_rule}' | "
-                                 f"List: '{matched_list}' | "
-                                 f"Policy: '{policy_name}' | "
-                                 f"Mode: block (entire response)"
-                             )
-                             return self.create_block_response(request, request.question[0].name, qtype).to_wire()
+                    if matched_action == "DROP":
+                        req_logger.info(f"🔇 DROPPED | Reason: Answer Match - Silent Drop | Trigger: {matched_target}")
+                        return None
+                    elif matched_action == "BLOCK":
+                        if self.ip_block_mode == 'block':
+                            req_logger.info(
+                                f"⛔ BLOCKED | Reason: Answer Match - Full Response Blocked | "
+                                f"Trigger: {matched_target} | "
+                                f"Mode: block (entire response)"
+                            )
+                            return self.create_block_response(request, request.question[0].name, qtype).to_wire()
                     else:
                         safe_rrsets.append(rrset)
                 
@@ -1075,7 +1099,6 @@ class DNSHandler:
             payload = response.payload if response.payload >= 512 else 1232
             response.use_edns(edns=edns_ver, ednsflags=response.ednsflags, options=filtered_response_options, payload=payload)
         
-        # Cache using normalized domain
         self.cache.put_dns(response, qname_norm, qtype, group=group_key, scope=policy_name, req_logger=req_logger)
         return response
 

@@ -745,3 +745,30 @@ def merge_groups(inline_groups, file_loader):
     # Convert back to lists
     return {name: list(ids) for name, ids in merged.items()}
 
+def match_geoip_group(ip: str, geoip_spec: str, geoip_lookup) -> bool:
+    """
+    Check if IP matches GeoIP specification.
+    
+    geoip_spec format: geoip:LOCATION where LOCATION is:
+    - ISO 3166 country code (e.g., 'geoip:NL')
+    - Full country name (e.g., 'geoip:NETHERLANDS')
+    - Continent name (e.g., 'geoip:EUROPE')
+    - Region name (e.g., 'geoip:BALKANS')
+    
+    Args:
+        ip: IP address to check
+        geoip_spec: GeoIP specification string
+        geoip_lookup: GeoIPLookup instance
+        
+    Returns:
+        True if IP matches location
+    """
+    if not geoip_lookup or not geoip_lookup.enabled:
+        return False
+    
+    if not geoip_spec.lower().startswith('geoip:'):
+        return False
+    
+    location = geoip_spec[6:].upper()  # Remove 'geoip:' prefix
+    return geoip_lookup.match_location(ip, location)
+

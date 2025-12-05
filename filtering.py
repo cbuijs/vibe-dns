@@ -2,22 +2,21 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 5.0.0 (Optimized - Regex Caching)
+# Version: 6.0.0 (GeoIP + DROP Action)
 # -----------------------------------------------------------------------------
 """
-Filtering Engine.
+Filtering Engine with GeoIP support and DROP action.
+
+Updates (v6.0.0):
+- GeoIP-based filtering for client identification and answer blocking
+- DROP action (silent drop with no response)
+- Rules with @ prefix support GeoIP location specs (@NL, @EUROPE, etc.)
 
 Updates (v5.0.0):
 - Regex pattern caching: Patterns compiled once and reused
 - DomainCategorizer pre-compiles all patterns during __init__
 - RuleEngine caches regex patterns to avoid recompilation
 - Added get_stats() method for monitoring
-
-Updates (v4.0.0):
-- All methods now expect PRE-NORMALIZED domain names (lowercase, no trailing dot)
-- Removed redundant .lower() and .rstrip('.') calls throughout
-- Domain normalization happens once at entry point (resolver.py)
-- Improved performance by eliminating duplicate string operations
 """
 
 import regex
@@ -35,22 +34,11 @@ class DomainTrie:
         self.root = {} 
 
     def insert(self, domain_rule, rule_data=None, list_name="Unknown"):
-        """
-        Insert rule into trie.
-        
-        Args:
-            domain_rule: Domain rule (can have . or *. prefix)
-            rule_data: Original rule text to store
-            list_name: List name for tracking
-            
-        Note: Expects normalized input (lowercase, no trailing dot)
-        """
         is_inclusive = domain_rule.startswith('.')
         is_exclusive = domain_rule.startswith('*.')
         
         clean_domain = domain_rule.lstrip('.*')
         
-        # Validate domain format
         if not is_valid_domain(clean_domain, allow_underscores=False):
             logger.warning(f"Invalid domain format, skipping: {domain_rule}")
             return
@@ -75,15 +63,6 @@ class DomainTrie:
             node['_end'] = data 
 
     def match(self, domain_norm: str):
-        """
-        Match domain and return the rule data.
-        
-        Args:
-            domain_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
-            
-        Returns:
-            Data dict with 'rule' and 'list' keys, or None
-        """
         parts = domain_norm.split('.')[::-1]
         node = self.root
         last_wildcard_data = None
@@ -111,7 +90,6 @@ class DomainCategorizer:
             with open(categories_file, 'r') as f:
                 self.categories = json.load(f)
             
-            # Pre-compile ALL regex patterns during initialization
             total_patterns = 0
             failed_patterns = 0
             
@@ -140,15 +118,6 @@ class DomainCategorizer:
             logger.error(f"Error loading categories: {e}")
 
     def categorize(self, domain_norm: str) -> dict:
-        """
-        Categorize domain.
-        
-        Args:
-            domain_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
-            
-        Returns:
-            Dict of {category: confidence_score}
-        """
         results = {}
         parts = domain_norm.replace('-', '.').split('.')
         tld = parts[-1] if parts else ""
@@ -156,21 +125,17 @@ class DomainCategorizer:
         for category, data in self.categories.items():
             score = 0
             
-            # TLD matching
             if 'tlds' in data and tld in data['tlds']: 
                 score = max(score, 90)
             
-            # Regex matching
             if category in self.regex_cache:
                 for pattern in self.regex_cache[category]:
                     if pattern.search(domain_norm):
                         score = max(score, 100)
                         break
             
-            # Keyword matching
             if 'keywords' in data:
                 for kw in data['keywords']:
-                    # Keywords in categories.json are already lowercase
                     if kw in parts:
                         score = max(score, 95)
                     elif kw in domain_norm:
@@ -185,22 +150,30 @@ class RuleEngine:
     def __init__(self):
         self.allow_trie = DomainTrie()
         self.block_trie = DomainTrie()
+        self.drop_trie = DomainTrie()
         self.allow_regex = []
         self.block_regex = []
+        self.drop_regex = []
         self.allow_ips = []
         self.block_ips = []
+        self.drop_ips = []
         self.answer_block_trie = DomainTrie()
         self.answer_block_ips = [] 
         self.answer_block_regex = []
+        self.answer_block_geoip = []
+        self.answer_drop_trie = DomainTrie()
+        self.answer_drop_ips = []
+        self.answer_drop_regex = []
+        self.answer_drop_geoip = []
         self.allowed_types = set()
         self.blocked_types = set()
+        self.dropped_types = set()
         self.categorizer = None 
         self.category_rules = {}
         
-        # Regex pattern cache - prevents recompilation
         self._regex_cache = {}
 
-    def set_type_filters(self, allowed: list[str], blocked: list[str]):
+    def set_type_filters(self, allowed: list[str], blocked: list[str], dropped: list[str] = None):
         if allowed:
             for t in allowed:
                 try: 
@@ -213,33 +186,36 @@ class RuleEngine:
                     self.blocked_types.add(dns.rdatatype.from_text(t.upper()))
                 except Exception: 
                     logger.warning(f"Unknown QTYPE: {t}")
+        if dropped:
+            for t in dropped:
+                try:
+                    self.dropped_types.add(dns.rdatatype.from_text(t.upper()))
+                except Exception:
+                    logger.warning(f"Unknown QTYPE: {t}")
 
     def set_category_rules(self, rules_config):
         self.category_rules = rules_config or {}
 
     def check_type(self, qtype: int):
         qtype_name = dns.rdatatype.to_text(qtype)
+        
+        # Check allowed_types first (whitelist mode)
         if self.allowed_types:
             if qtype not in self.allowed_types: 
-                return True, f"Type {qtype_name} NOT in allowed list", "PolicyTypeFilter"
-            return False, None, None
-        if self.blocked_types:
-            if qtype in self.blocked_types: 
-                return True, f"Type {qtype_name} IS in blocked list", "PolicyTypeFilter"
-        return False, None, None
+                return "BLOCK", f"Type {qtype_name} NOT in allowed list", "PolicyTypeFilter"
+            # If in allowed list, still check dropped_types below
+        
+        # Check dropped_types (highest priority action if type is otherwise allowed)
+        if self.dropped_types and qtype in self.dropped_types:
+            return "DROP", f"Type {qtype_name} IS in dropped list", "PolicyTypeFilter"
+        
+        # Check blocked_types
+        if self.blocked_types and qtype in self.blocked_types:
+            return "BLOCK", f"Type {qtype_name} IS in blocked list", "PolicyTypeFilter"
+        
+        return "PASS", None, None
 
     def add_rule(self, rule_text, list_type='block', list_name="Unknown"):
-        """
-        Add a filtering rule.
-        
-        Args:
-            rule_text: Rule text (will be normalized)
-            list_type: 'allow' or 'block'
-            list_name: Source list name
-            
-        Returns:
-            Rule type: 'domain', 'regex', 'ip', 'cidr', or 'ignored'
-        """
         rule_text = rule_text.strip()
         if not rule_text or rule_text.startswith('#'): 
             return "ignored"
@@ -247,11 +223,30 @@ class RuleEngine:
         is_answer_only = rule_text.startswith('@')
         clean_rule_text = rule_text[1:] if is_answer_only else rule_text
 
-        # Regex Rule - with pattern caching
+        # GeoIP Rule (@COUNTRY, @CONTINENT, @REGION)
+        if clean_rule_text.startswith('@'):
+            location_spec = clean_rule_text[1:].upper()
+            target = (
+                self.answer_drop_geoip if is_answer_only and list_type == 'drop' else
+                self.answer_block_geoip if is_answer_only else []
+            )
+            if not target:
+                logger.warning(f"GeoIP rules only supported in answer-only mode: {rule_text}")
+                return "ignored"
+            
+            target.append((location_spec, rule_text, list_name))
+            logger.debug(
+                f"Added GeoIP rule: {rule_text} | "
+                f"Location: {location_spec} | "
+                f"Action: {list_type.upper()} | "
+                f"List: {list_name}"
+            )
+            return "geoip"
+
+        # Regex Rule
         if clean_rule_text.startswith('/') and clean_rule_text.endswith('/'):
             pattern_str = clean_rule_text[1:-1]
             
-            # Check cache first
             if pattern_str not in self._regex_cache:
                 try:
                     self._regex_cache[pattern_str] = regex.compile(pattern_str, regex.IGNORECASE)
@@ -260,52 +255,67 @@ class RuleEngine:
                     return "ignored"
             
             pattern = self._regex_cache[pattern_str]
-            target = self.answer_block_regex if is_answer_only else (
-                self.block_regex if list_type == 'block' else self.allow_regex
-            )
+            
+            if is_answer_only:
+                target = self.answer_drop_regex if list_type == 'drop' else self.answer_block_regex
+            else:
+                target = (
+                    self.drop_regex if list_type == 'drop' else
+                    self.block_regex if list_type == 'block' else
+                    self.allow_regex
+                )
+            
             target.append((pattern, rule_text, list_name)) 
             return "regex"
 
         # IP/CIDR Rule
         try:
             net = ipaddress.ip_network(clean_rule_text, strict=False)
-            target = self.answer_block_ips if is_answer_only else (
-                self.block_ips if list_type == 'block' else self.allow_ips
-            )
+            
+            if is_answer_only:
+                target = self.answer_drop_ips if list_type == 'drop' else self.answer_block_ips
+            else:
+                target = (
+                    self.drop_ips if list_type == 'drop' else
+                    self.block_ips if list_type == 'block' else
+                    self.allow_ips
+                )
+            
             target.append((net, rule_text, list_name))
             return "cidr" if '/' in clean_rule_text else "ip"
         except ValueError: 
             pass
 
-        # Domain Rule - normalize before insertion
+        # Domain Rule
         from domain_utils import normalize_domain
         clean_normalized = normalize_domain(clean_rule_text)
         
-        # Preserve prefix for rule matching
         if clean_rule_text.startswith('.'):
             clean_normalized = '.' + clean_normalized
         elif clean_rule_text.startswith('*.'):
             clean_normalized = '*.' + clean_normalized
         
-        target = self.answer_block_trie if is_answer_only else (
-            self.block_trie if list_type == 'block' else self.allow_trie
-        )
+        if is_answer_only:
+            target = self.answer_drop_trie if list_type == 'drop' else self.answer_block_trie
+        else:
+            target = (
+                self.drop_trie if list_type == 'drop' else
+                self.block_trie if list_type == 'block' else
+                self.allow_trie
+            )
+        
         target.insert(clean_normalized, rule_data=rule_text, list_name=list_name)
         return "domain"
 
     def is_blocked(self, qname_norm: str):
-        """
-        Check if domain is blocked.
-        
-        Args:
-            qname_norm: PRE-NORMALIZED domain (lowercase, no trailing dot)
-            
-        Returns:
-            (action, rule, list_name) tuple where action is ALLOW/BLOCK/PASS
-        """
+        """Returns (action, rule, list_name) where action is ALLOW/BLOCK/DROP/PASS"""
         match = self.allow_trie.match(qname_norm)
         if match: 
             return "ALLOW", match['rule'], match['list']
+        
+        match = self.drop_trie.match(qname_norm)
+        if match:
+            return "DROP", match['rule'], match['list']
         
         match = self.block_trie.match(qname_norm)
         if match: 
@@ -313,56 +323,103 @@ class RuleEngine:
         
         return "PASS", None, None
 
-    def check_answer(self, qname_norm, ip_str):
+    def check_answer(self, qname_norm, ip_str, geoip_lookup=None):
         """
         Check answer records.
-        
-        Args:
-            qname_norm: PRE-NORMALIZED domain (lowercase, no trailing dot) or None
-            ip_str: IP address string or None
-            
-        Returns:
-            (is_blocked, rule, list_name) tuple
+        Returns (action, rule, list_name) where action is BLOCK/DROP/PASS
         """
+        # GeoIP check for answer IPs
+        if ip_str and geoip_lookup:
+            logger.debug(f"Checking answer IP {ip_str} against GeoIP rules...")
+            
+            for location_spec, rule, list_name in self.answer_drop_geoip:
+                logger.debug(f"  Testing DROP rule: {rule} (location: {location_spec})")
+                if geoip_lookup.match_location(ip_str, location_spec):
+                    logger.info(
+                        f"✓ GeoIP DROP match: IP {ip_str} matches {location_spec} | "
+                        f"Rule: '{rule}' | List: '{list_name}'"
+                    )
+                    return "DROP", rule, list_name
+            
+            for location_spec, rule, list_name in self.answer_block_geoip:
+                logger.debug(f"  Testing BLOCK rule: {rule} (location: {location_spec})")
+                if geoip_lookup.match_location(ip_str, location_spec):
+                    logger.info(
+                        f"✓ GeoIP BLOCK match: IP {ip_str} matches {location_spec} | "
+                        f"Rule: '{rule}' | List: '{list_name}'"
+                    )
+                    return "BLOCK", rule, list_name
+        
+        # IP check
         if ip_str:
             try:
                 ip = ipaddress.ip_address(ip_str)
+                
+                for net, rule, list_name in self.answer_drop_ips:
+                    if ip in net:
+                        logger.debug(f"Answer IP {ip_str} matched DROP rule: {rule}")
+                        return "DROP", rule, list_name
+                
                 for net, rule, list_name in self.answer_block_ips:
                     if ip in net: 
-                        return True, rule, list_name
+                        logger.debug(f"Answer IP {ip_str} matched BLOCK rule: {rule}")
+                        return "BLOCK", rule, list_name
             except ValueError: 
                 pass 
         
+        # Domain check
         if qname_norm:
+            for pat, original_rule, list_name in self.answer_drop_regex:
+                if pat.search(qname_norm):
+                    logger.debug(f"Answer domain {qname_norm} matched DROP regex: {original_rule}")
+                    return "DROP", original_rule, list_name
+            
             for pat, original_rule, list_name in self.answer_block_regex:
                 if pat.search(qname_norm): 
-                    return True, original_rule, list_name
+                    logger.debug(f"Answer domain {qname_norm} matched BLOCK regex: {original_rule}")
+                    return "BLOCK", original_rule, list_name
+            
+            match = self.answer_drop_trie.match(qname_norm)
+            if match:
+                logger.debug(f"Answer domain {qname_norm} matched DROP rule: {match['rule']}")
+                return "DROP", match['rule'], match['list']
+            
             match = self.answer_block_trie.match(qname_norm)
             if match: 
-                return True, match['rule'], match['list']
+                logger.debug(f"Answer domain {qname_norm} matched BLOCK rule: {match['rule']}")
+                return "BLOCK", match['rule'], match['list']
         
-        return False, None, None
+        return "PASS", None, None
     
     def get_stats(self) -> dict:
-        """
-        Get filtering engine statistics.
-        
-        Returns:
-            Dict with rule counts and cache stats
-        """
-        return {
+        stats = {
             'allow_domains': len(self.allow_trie.root),
             'block_domains': len(self.block_trie.root),
+            'drop_domains': len(self.drop_trie.root),
             'allow_regex': len(self.allow_regex),
             'block_regex': len(self.block_regex),
+            'drop_regex': len(self.drop_regex),
             'allow_ips': len(self.allow_ips),
             'block_ips': len(self.block_ips),
+            'drop_ips': len(self.drop_ips),
             'answer_block_domains': len(self.answer_block_trie.root),
             'answer_block_regex': len(self.answer_block_regex),
             'answer_block_ips': len(self.answer_block_ips),
+            'answer_block_geoip': len(self.answer_block_geoip),
+            'answer_drop_domains': len(self.answer_drop_trie.root),
+            'answer_drop_regex': len(self.answer_drop_regex),
+            'answer_drop_ips': len(self.answer_drop_ips),
+            'answer_drop_geoip': len(self.answer_drop_geoip),
             'regex_patterns_cached': len(self._regex_cache),
             'allowed_types': len(self.allowed_types),
             'blocked_types': len(self.blocked_types),
+            'dropped_types': len(self.dropped_types),
             'category_rules': len(self.category_rules)
         }
+        
+        # Log GeoIP rules if present
+        if stats['answer_block_geoip'] > 0 or stats['answer_drop_geoip'] > 0:
+            logger.debug(f"GeoIP rules active: {stats['answer_block_geoip']} BLOCK, {stats['answer_drop_geoip']} DROP")
+        
+        return stats
 

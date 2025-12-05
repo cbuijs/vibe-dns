@@ -1,161 +1,105 @@
 # =============================================================================
+# VIBE-DNS CONFIGURATION
+# =============================================================================
+
+# =============================================================================
 # 1. LOGGING CONFIGURATION
-# Controls output verbosity and destinations (Console, File, Syslog).
 # =============================================================================
 logging:
-  # Sets the verbosity of logs. Lower number means more verbose output (DEBUG).
-  # Options: "DEBUG", "INFO", "WARNING", "ERROR".
-  # Default: "INFO"
   level: "DEBUG"
-  
-  # Enable logging to standard output (console/terminal).
   enable_console: true
-  
-  # If true, prepends the timestamp to console log messages.
-  # Default: true
   console_timestamp: false
-  
-  # Enable logging to a specific file.
   enable_file: false
-  
-  # Path to the log file.
   file_path: "./dns_server.log"
-  
-  # Enable logging to the system logger (Syslog).
   enable_syslog: false
-  
-  # Syslog address or socket path.
-  # - Local Socket (Linux/Mac): "/dev/log"
-  # - Remote Server: "192.168.1.50:514"
   syslog_address: "/dev/log"
-  
-  # Protocol for REMOTE syslog only. Ignored for local sockets.
-  # Options: "UDP", "TCP".
   syslog_protocol: "UDP"
 
 # =============================================================================
 # 2. SERVER NETWORKING
-# Defines binding and listening ports.
 # =============================================================================
 server:
-  # List of IPv4 or IPv6 addresses the server should bind listeners to.
-  # - "0.0.0.0": Binds to all available IPv4 interfaces.
-  # - "::": Binds to all available IPv6 interfaces.
-  # Note: Use either bind_ip OR bind_interfaces, not both.
-  #bind_ip: 
-    #- "0.0.0.0"
-    #- "::"
-
-  # List of network interface names (e.g., "eth0", "wlan0"). 
-  # The server resolves these to their current IPs at startup.
   bind_interfaces:
     - "lo"
     - "eth0"
   
-  # List of ports for standard DNS UDP traffic.
-  # Standard is 53. Requires root privileges.
   port_udp: [53]
-  
-  # List of ports for standard DNS TCP traffic.
-  # Standard is 53.
   port_tcp: [53]
   
-  # --- Client Identification Features ---
-  
-  # Enable identifying clients via EDNS Client Subnet (ECS, Option Code 8).
-  # If true, the IP in the ECS header is used for policy matching, overriding the source IP.
   use_ecs: true
-
-  # Enable identifying clients via EDNS0 MAC forwarding (Option 65001).
-  # If present, this MAC is used for client group identification.
   use_edns_mac: true
   
-  # --- Forwarding Features ---
-  
-  # Mode for handling ECS options when forwarding to upstream.
-  # Options:
-  #   - "none": (Default) Remove ECS option if present.
-  #   - "preserve": Forward existing ECS option as-is.
-  #   - "add": Overwrite/Add ECS option with the detected client IP.
-  forward_ecs_mode: "preserve"
-
-  # Mode for handling MAC options (65001) when forwarding to upstream.
-  # Options:
-  #   - "none": (Default) Remove MAC option if present.
-  #   - "preserve": Forward existing MAC option as-is.
-  #   - "add": Overwrite/Add MAC option with the detected/resolved client MAC.
-  forward_mac_mode: "preserve"
+  forward_ecs_mode: "preserve"  # none, preserve, add
+  forward_mac_mode: "preserve"  # none, preserve, add
 
 # =============================================================================
-# 3. UPSTREAM RESOLUTION
-# Defines targets and health monitoring strategy.
+# 3. GEOIP CONFIGURATION
+# Configure MaxMind GeoLite2/GeoIP2 or IPInfo database for geographic filtering.
+# =============================================================================
+geoip:
+  # Enable GeoIP lookups for client identification and answer filtering
+  enabled: false
+  
+  # Path to MMDB database file (MaxMind or IPInfo)
+  # 
+  # MaxMind GeoLite2 (Free, requires account):
+  #   - Download from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+  #   - Sign up for free account to get download access
+  #   - Choose: GeoLite2 Country or GeoLite2 City
+  #   - Extract the .mmdb file from the downloaded archive
+  #
+  # IPInfo (Free tier available):
+  #   - Download from: https://ipinfo.io/developers/database-download
+  #   - Free tier: Standard IP to Country database
+  #   - Requires free account and token
+  #   - Choose: Country or City database (MMDB format)
+  #
+  # Example paths:
+  #   MaxMind: "./geoip/GeoLite2-Country.mmdb" or "./geoip/GeoLite2-City.mmdb"
+  #   IPInfo:  "./geoip/country.mmdb" or "./geoip/standard_location.mmdb"
+  #
+  database_path: "./geoip/GeoLite2-Country.mmdb"
+  
+  # Path to compiled GeoNames database (optional but recommended)
+  # Provides comprehensive country/region/continent mappings
+  #
+  # To compile: python3 geonames_compiler.py --output geonames_compiled.json
+  # Or run: bash compile_geonames.sh
+  #
+  # This enables:
+  #   - Full country name matching (NETHERLANDS, GERMANY, etc.)
+  #   - Region matching (BALKANS, SCANDINAVIA, MIDDLE_EAST, etc.)
+  #   - Continent matching by name (EUROPE, ASIA, etc.)
+  #   - GeoNames ID resolution
+  #
+  # If not specified or file not found, falls back to basic hardcoded mappings
+  geonames_database: "./geonames_compiled.json"
+
+# =============================================================================
+# 4. UPSTREAM RESOLUTION
 # =============================================================================
 upstream:
-  # Toggle to enable/disable the connectivity check at server startup.
-  # If true, the server will test upstream connectivity before accepting queries.
-  # If false, the server starts immediately (useful for offline testing).
   startup_check_enabled: true
-  
-  # Toggle to enable/disable automatic fallback to bootstrap/default servers
-  # if no configured upstreams are valid.
-  # Default: false (Do not fallback, just log error)
   fallback_enabled: false
-  
-  # Allow underscores in domain names (non-RFC compliant but sometimes needed)
-  # Some DNS providers use underscores in hostnames (e.g., _dmarc.example.com)
-  # Default: false (strict RFC compliance)
   allow_underscores: false
-
-  # Monitoring Mode: How to select the active upstream server.
-  # Options: 
-  #   - "none": Disables all monitoring, uses servers in order.
-  #   - "random": Selects a server randomly from the group.
-  #   - "roundrobin": Cycles through servers sequentially.
-  #   - "fastest": Sorts by current measured latency every interval. (Default)
-  #   - "failover": Switches to backup servers only if primary fails.
-  #   - "sticky": Like failover, but stays on backup until it fails.
-  #   - "loadbalance": Sorts by lowest rolling average latency.
-  #
-  # Note: If a group has only 1 server, monitoring is automatically disabled for that group.
   mode: "loadbalance"
-
-  # Monitoring interval (seconds) to check upstream latency.
   monitor_interval: 60
-  
-  # If true, triggers a background latency check immediately when a query arrives 
-  # if the cached latency data is older than monitor_interval.
   monitor_on_query: true
-  
-  # Domain used for latency health checks.
   test_domain: "www.google.com"
-
-  # Bootstrap DNS servers used ONLY to resolve the hostnames of your main upstreams.
-  # Used if the upstream host is a domain (e.g., 'dns.quad9.net') and no #forced_ip is provided.
+  
   bootstrap:
     - "udp://86.54.11.1:53"
     - "udp://86.54.11.201:53"
     - "udp://[2a13:1001::86:54:11:1]:53"
     - "udp://[2a13:1001::86:54:11:201]:53"
 
-  # Upstream Server Groups. Used for routing specific client policies to different sets of resolvers.
-  # Syntax: [protocol://]<host|ip>[:<port>][/path][#<forced_ip>]
-  # Protocols: udp, tcp, tls/dot (DoT), https/doh (DoH), h3/doh3 (DoH3).
   groups:
     Default:
       servers:
-        # DNS-over-HTTPS (HTTP/2 or HTTP/1.1)
         - "https://protective.joindns4.eu:443/dns-query#86.54.11.1"
         - "https://protective.joindns4.eu:443/dns-query#86.54.11.201"
         - "https://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:1"
         - "https://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:201"
-        # DNS-over-TLS
-        - "dot://protective.joindns4.eu:853#86.54.11.1"
-        - "dot://protective.joindns4.eu:853#86.54.11.201"
-        - "dot://protective.joindns4.eu:853#2a13:1001::86:54:11:1"
-        - "dot://protective.joindns4.eu:853#2a13:1001::86:54:11:201"
-        # DNS-over-HTTP/3 (uncomment if you have httpx[http3] and aioquic installed)
-        # - "h3://protective.joindns4.eu:443/dns-query#86.54.11.1"
-        # - "h3://protective.joindns4.eu:443/dns-query#2a13:1001::86:54:11:1"
     
     Filtered:
       servers:
@@ -163,152 +107,116 @@ upstream:
         - "https://child-noads.joindns4.eu:443/dns-query#86.54.11.211"
         - "https://child-noads.joindns4.eu:443/dns-query#2a13:1001::86:54:11:11"
         - "https://child-noads.joindns4.eu:443/dns-query#2a13:1001::86:54:11:211"
-        - "dot://child-noads.joindns4.eu:853#86.54.11.11"
-        - "dot://child-noads.joindns4.eu:853#86.54.11.211"
-        - "dot://child-noads.joindns4.eu:853#2a13:1001::86:54:11:11"
-        - "dot://child-noads.joindns4.eu:853#2a13:1001::86:54:11:211"
       
 # =============================================================================
-# 4. CACHING & PERFORMANCE
+# 5. CACHING & PERFORMANCE
 # =============================================================================
 cache:
-  # Maximum number of unique DNS entries to cache in memory (0 disables).
   size: 10000
-  
-  # Garbage Collector interval (seconds) to clean up expired cache entries.
   gc_interval: 300
-  
-  # TTL (seconds) for negative answers (NXDOMAIN/NODATA).
   negative_ttl: 60
-  
-  # --- Prefetching ---
-  # If a cached record is about to expire (less than X seconds remaining), 
-  # serve it but trigger a background query to refresh it. Set to 0 to disable.
   prefetch_margin: 10
-  
-  # Minimum number of cache hits required before an entry qualifies for prefetching.
   prefetch_min_hits: 3
 
 decision_cache:
-  # Maximum number of filtering decisions to cache in memory (0 disables).
-  # Default: 50000
-  # Memory usage: ~5-10 MB for 50K entries
   size: 2500
-  
-  # Time-to-live (seconds) for cached decisions.
-  # Lower values propagate policy changes faster, higher values improve performance.
-  # Recommended: 300 (5 minutes) for typical home networks
-  # Default: 300
   ttl: 300
 
 deduplication:
-  # Enable request coalescing. If enabled, multiple identical requests arriving
-  # almost simultaneously result in only one query being sent upstream.
   enabled: true
 
 # =============================================================================
-# 5. RATE LIMITING
-# Configures DoS/Abuse protection.
+# 6. RATE LIMITING
 # =============================================================================
 rate_limit:
   enabled: true
-  
-  # Time window (seconds) for counting requests.
   window_seconds: 60
-  
-  # Subnet masks for grouping clients. Requests from IPs in the same subnet 
-  # count towards the same limit.
   ipv4_mask: 24
   ipv6_mask: 64
-  
-  # Max UDP queries allowed in the window before forcing a TCP retry (TC Bit).
-  udp_threshold: 100         
-  
-  # Absolute max queries (UDP+TCP) allowed before silently dropping the packet.
-  total_threshold: 200       
+  udp_threshold: 100
+  total_threshold: 200
 
 # =============================================================================
-# 6. RESPONSE MODIFICATION & BLOCKING BEHAVIOR
+# 7. RESPONSE MODIFICATION & BLOCKING BEHAVIOR
 # =============================================================================
 response:
-  # Enable Round Robin. Shuffles the order of A and AAAA records in the answer.
   round_robin_enabled: true
-  
-  # CNAME Flattening. Recursively resolves CNAME chains.
   cname_collapse: true
-  
-  # Response Minimization. Strips Authority and Additional sections.
   minimize_response: false
   
-  # Enforced TTL Bounds (Seconds).
-  min_ttl: 60      
-  max_ttl: 14400   
+  min_ttl: 60
+  max_ttl: 14400
+  ttl_sync_mode: "last"  # none, lowest, highest, average, first, last
   
-  # TTL Sync Mode: "none", "lowest", "highest", "average", "first", "last"
-  ttl_sync_mode: "last"
+  # IP blocking behavior when answer contains blocked IP/CIDR
+  ip_block_mode: "filter"  # filter (remove record) or block (block entire response)
   
-  # --- IP Blocking Behavior ---
+  # DNS Response Code for BLOCK action
+  block_rcode: "REFUSED"  # REFUSED, NXDOMAIN, NOERROR, SERVFAIL
   
-  # Behavior when an A or AAAA record is matched by an IP/CIDR block rule.
-  # Options: "filter" (remove record), "block" (block entire response).
-  ip_block_mode: "filter"
-
-  # DNS Response Code sent when a query is blocked.
-  # Options: "REFUSED", "NXDOMAIN", "NOERROR", "SERVFAIL".
-  block_rcode: "REFUSED"
-  
-  # TTL (seconds) assigned to synthetic blocked responses.
+  # TTL for synthetic blocked responses
   block_ttl: 60
   
-  # IP Injection for blocks (Sinkholing).
-  # "NULL" returns 0.0.0.0 / ::. Or use a specific IP like "10.0.0.1".
+  # IP injection for blocks (sinkholing)
+  # "NULL" returns 0.0.0.0/::, or specify custom IP like "10.0.0.1"
   block_ip: "NULL"
   
-  # Global Answer Matching.
-  # If true, applies blocklists against CNAME targets and IPs in the answer.
+  # Apply blocklists to CNAME targets and IPs in answers
   match_answers_globally: false
 
 # =============================================================================
-# 7. CATEGORIZATION
-# Enable/disable domain categorization feature
+# 8. CATEGORIZATION
 # =============================================================================
 categorization_enabled: true
+categories_file: "categories.json"
 
 # =============================================================================
-# 8. CLIENT GROUPS & IDENTIFICATION
+# 9. CLIENT GROUPS & IDENTIFICATION
+# 
+# Groups can match clients by:
+# - server_ip:<ip>       - Match by listening server IP
+# - server_port:<port>   - Match by listening port
+# - geoip:<LOCATION>     - Match by geographic location (requires GeoIP enabled)
+# - <mac_address>        - Match by client MAC
+# - <ip_address>         - Match by client IP
+# - <cidr_range>         - Match by IP subnet
+#
+# GeoIP location formats:
+# - ISO 3166 country code: geoip:NL, geoip:DE, geoip:US
+# - Full country name: geoip:NETHERLANDS, geoip:GERMANY, geoip:FRANCE
+# - Continent: geoip:EUROPE, geoip:ASIA, geoip:AFRICA
+# - Region: geoip:BALKANS, geoip:SCANDINAVIA, geoip:MIDDLE_EAST
 # =============================================================================
 mac_cache_refresh_interval: 300
 
 groups:
-  # Priorities: 1. ServerIP, 2. ServerPort, 3. MAC, 4. IP, 5. CIDR
-  # Format for special identifiers:
-  #   - server_ip:<ip>      Match by listening server IP
-  #   - server_port:<port>  Match by listening port
-  #   - <mac_address>       Match by client MAC
-  #   - <ip_address>        Match by client IP
-  #   - <cidr_range>        Match by IP subnet
   kids_devices:
     - "48:db:50:38:8a:94"
     - "4c:8d:79:d5:b3:04"
-    - "a0:ce:c8:e9:3f:29"
-    - "a8:20:66:52:6f:d5"
-    - "d8:8c:79:22:b8:9b"
     - "192.168.1.20"
     - "192.168.1.21"
     - "10.1.1.0/24"
-
+  
   guest_network:
     - "172.16.1.0/24"
+  
+  # Example: EU clients only
+  eu_clients:
+    - "geoip:EUROPE"
+  
+  # Example: Specific countries
+  netherlands_clients:
+    - "geoip:NL"
+    - "geoip:NETHERLANDS"
 
-# Inline groups and file groups are automatically merged.
 group_files:
   kids_devices: "./groups/kids_devices.txt"
   guest_network: "./groups/guest_network.txt"
   iot_devices: "./groups/iot_devices.txt"
-  refresh_interval: 300  # seconds (5 minutes)
+  refresh_interval: 300
 
 # =============================================================================
-# 9. SCHEDULES
+# 10. SCHEDULES
 # =============================================================================
 schedules:
   bedtime:
@@ -318,7 +226,7 @@ schedules:
     - { days: ["Mon", "Tue", "Wed", "Thu", "Fri"], start: "08:30", end: "15:30" }
 
 # =============================================================================
-# 10. POLICY ASSIGNMENTS
+# 11. POLICY ASSIGNMENTS
 # =============================================================================
 assignments:
   kids_devices:
@@ -328,12 +236,31 @@ assignments:
   
   guest_network:
     policy: "GuestPolicy"
+  
+  # Example: Block non-EU traffic
+  eu_clients:
+    policy: "EUPolicy"
 
 # =============================================================================
-# 11. FILTER LISTS & CATEGORIZATION
+# 12. FILTER LISTS & CATEGORIZATION
+#
+# Rules can be:
+# - Domains: example.com, .example.com, *.example.com
+# - Regex: /pattern/
+# - IPs/CIDR: 1.2.3.4, 10.0.0.0/8
+# - GeoIP (answer-only): @@NL, @@EUROPE, @@ASIA
+#
+# Rule prefixes:
+# - @ = Answer-only rule (blocks IPs/domains in DNS responses, not queries)
+# - @@ = GeoIP answer-only rule (blocks responses from specific countries/regions)
+#
+# Examples:
+# - @1.2.3.4          - Block this IP in answers
+# - @.ad-tracker.com  - Block this domain in CNAME chains
+# - @@CN              - Block IPs from China in answers
+# - @@RUSSIA          - Block IPs from Russia in answers
+# - @@ASIA            - Block all Asian IPs in answers
 # =============================================================================
-categories_file: "categories.json"
-
 lists:
   ads_basic:
     - source: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
@@ -342,19 +269,45 @@ lists:
   custom_block:
     - source: "block.list"
       hosts_domain_type: "inclusive"
-
+  
+  custom_drop:
+    - source: "drop.list"
+      hosts_domain_type: "exact"
+  
   custom_allow:
     - source: "allow.list"
       hosts_domain_type: "exact"
+  
+  # Example: Block responses from specific countries
+  geoip_block:
+    - source: "geoip_block.list"
+      hosts_domain_type: "exact"
+  # Example content of geoip_block.list:
+  # @@CN       # Block China IPs in answers
+  # @@RU       # Block Russia IPs in answers
+  # @@KP       # Block North Korea IPs in answers
 
 # =============================================================================
-# 12. POLICIES
+# 13. POLICIES
+#
+# Actions available:
+# - allow: Domain/IP is explicitly allowed
+# - block: Return block response (REFUSED/NXDOMAIN/etc.)
+# - drop:  Silent drop, no response sent (useful for tracking/telemetry domains)
+#
+# Type filters:
+# - allowed_types: Whitelist of allowed query types (blocks all others)
+# - blocked_types: Blacklist of blocked query types (returns block response)
+# - dropped_types: Query types to silently drop (no response)
+#
+# Category rules support actions:
+# - ALLOW: Allow this category
+# - BLOCK: Block this category (return block response)
+# - DROP:  Drop queries for this category (no response)
 # =============================================================================
 policies:
-  # Default fallback policy (used when no group matches)
   DefaultPolicy:
     upstream_group: "Default"
-    # Allow all by default
     
   StrictPolicy:
     upstream_group: "Filtered"
@@ -363,6 +316,8 @@ policies:
     block:
       - "ads_basic"
       - "custom_block"
+    drop:
+      - "custom_drop"  # Silent drop for tracking domains
     allowed_types: 
       - "A"
       - "AAAA"
@@ -376,20 +331,31 @@ policies:
       social_media:
         min_confidence: 60
         action: "BLOCK"
+      tracking:
+        min_confidence: 70
+        action: "DROP"  # Silent drop for trackers
       
   GuestPolicy:
     upstream_group: "Default"
     block:
       - "ads_basic"
-    blocked_types:
-      - "TXT"
-      - "ANY"
-      - "NULL"
-      - "HINFO"
-      - "AXFR"
+    dropped_types:
+      - "ANY"      # Drop ANY queries (abuse prevention)
+      - "AXFR"     # Drop zone transfer attempts
       - "IXFR"
     category_rules:
       gambling:
         min_confidence: 85
         action: "BLOCK"
+  
+  # Example: Block non-EU responses
+  EUPolicy:
+    upstream_group: "Default"
+    block:
+      - "ads_basic"
+      - "geoip_block"  # Block answers from blocked countries
+    category_rules:
+      tracking:
+        min_confidence: 80
+        action: "DROP"
 

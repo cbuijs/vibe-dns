@@ -36,7 +36,7 @@
     ],
     "regex": [
       "/(^|\\.)bank-[a-z]+\\./",
-      "/(^|\\.)[a-z\\-]+bank./",
+      "/(^|\\.)[a-z\\-]+bank./"
     ],
     "tlds": [
       "abnamro", "allfinanz", "americanexpress", "amex", "axa", "bananarepublic", 

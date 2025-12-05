@@ -2,15 +2,16 @@
 # filename: server.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 4.1.0 (Decision Cache) + OPTIMIZED
+# Version: 4.2.0 (GeoIP Integration + Decision Cache)
 # -----------------------------------------------------------------------------
 """
-Main Server Module.
+Main Server Module with GeoIP support.
 
 Updates:
+- Added GeoIP initialization and integration
 - Added decision cache statistics logging
 - Integrated with DecisionCache for performance monitoring
-- OPTIMIZED: Uses defaults module for configuration merging
+- Uses defaults module for configuration merging
 """
 
 import asyncio
@@ -30,6 +31,7 @@ from utils import setup_logger, MacMapper, get_server_ips, get_logger, GroupFile
 from startup import perform_startup_checks
 from config_validator import validate_config
 from defaults import merge_with_defaults
+from geoip import GeoIPLookup
 
 # Initialize Module Logger
 logger = get_logger("Server")
@@ -129,7 +131,7 @@ async def main() -> None:
                 config = yaml.safe_load(f) or {}
             logger.info(f"Loaded configuration from {args.config}")
             
-            # OPTIMIZED: Merge with defaults
+            # Merge with defaults
             config = merge_with_defaults(config)
             logger.debug("Applied default configuration values")
             
@@ -191,8 +193,8 @@ async def main() -> None:
 
     # 4. Setup Logging
     setup_logger(config)
-    logger.info("Starting DNS Filter Server v4.1.0 (Engine: dnspython + Decision Cache)")
-    logger.info("Major improvements: Decision caching, LRU cache, circuit breakers, DoH HTTP/2, config validation")
+    logger.info("Starting DNS Filter Server v4.2.0 (Engine: dnspython + GeoIP + Decision Cache)")
+    logger.info("Major improvements: GeoIP support, Decision caching, LRU cache, circuit breakers, DoH HTTP/2, config validation")
     
     # 5. Initialize Components
     logger.info(">>> Phase 2: Component Initialization")
@@ -219,28 +221,32 @@ async def main() -> None:
         refresh_interval=config.get('list_refresh_interval', 86400),
         categories_file=config.get('categories_file', 'categories.json')
     )
-    await list_manager.update_lists(config['lists'])
+    await list_manager.update_lists(config.get('lists', {}))
     
     logger.info("Compiling Policy Rules...")
     rule_engines = {}
-    for pol_name, pol_cfg in config['policies'].items():
+    for pol_name, pol_cfg in config.get('policies', {}).items():
         rule_engines[pol_name] = list_manager.compile_policy(pol_name, pol_cfg)
     logger.info(f"Compiled {len(rule_engines)} policies")
 
     logger.info("Initializing Upstream Manager...")
-    upstream = UpstreamManager(config['upstream'])
+    upstream = UpstreamManager(config.get('upstream', {}))
     monitor_task = asyncio.create_task(upstream.start_monitor())
     
     # Startup Health Check
-    if config['upstream'].get('startup_check_enabled', True):
+    if config.get('upstream', {}).get('startup_check_enabled', True):
         logger.info("Performing startup connectivity checks...")
         await asyncio.sleep(0.5) 
-        if not await perform_startup_checks(upstream, config['upstream'].get('test_domain', 'www.google.com')):
+        if not await perform_startup_checks(upstream, config.get('upstream', {}).get('test_domain', 'www.google.com')):
             logger.critical("Server startup aborted: Unable to reach upstream")
             monitor_task.cancel()
             await upstream.close()
             return
         logger.info("✓ Startup checks passed")
+    
+    # Initialize GeoIP
+    logger.info(">>> Phase 2b: GeoIP Initialization")
+    geoip_lookup = GeoIPLookup(config)
     
     logger.info("Initializing DNS Cache & Resolver...")
     cache_cfg = config.get('cache', {})
@@ -260,7 +266,8 @@ async def main() -> None:
         groups=merged_groups, 
         mac_mapper=mac_mapper, 
         upstream=upstream, 
-        cache=cache
+        cache=cache,
+        geoip=geoip_lookup
     )
 
     # 6. Listeners
@@ -272,7 +279,7 @@ async def main() -> None:
     transports = []  
 
     def get_ports(key: str, default: list[int]) -> list[int]:
-        val = config['server'].get(key, default)
+        val = config.get('server', {}).get(key, default)
         return val if isinstance(val, list) else [val]
 
     udp_ports = get_ports('port_udp', [53])
@@ -317,10 +324,11 @@ async def main() -> None:
     logger.info(">>> Server is Ready & Running")
     logger.info("=" * 80)
     logger.info(f"Listening on {len(listen_ips)} IP(s), {len(udp_ports)} UDP + {len(tcp_ports)} TCP port(s)")
-    logger.info(f"Upstream mode: {config['upstream'].get('mode', 'fastest')}")
+    logger.info(f"Upstream mode: {config.get('upstream', {}).get('mode', 'fastest')}")
     logger.info(f"DNS cache: {cache_cfg.get('size', 10000)} entries (LRU eviction)")
     logger.info(f"Decision cache: {decision_cache_size} entries, TTL={decision_cache_ttl}s (LRU eviction)")
-    logger.info(f"Circuit breakers: {'enabled' if config['upstream'].get('circuit_breaker_enabled', True) else 'disabled'}")
+    logger.info(f"Circuit breakers: {'enabled' if config.get('upstream', {}).get('circuit_breaker_enabled', True) else 'disabled'}")
+    logger.info(f"GeoIP: {'ENABLED' if geoip_lookup.enabled else 'DISABLED'}")
     logger.info("Press Ctrl+C to stop")
     logger.info("=" * 80)
     
@@ -346,6 +354,10 @@ async def main() -> None:
     logger.info(f"  Hits: {decision_stats['hits']}, Misses: {decision_stats['misses']}")
     logger.info(f"  Hit rate: {decision_stats['hit_rate']}")
     logger.info(f"  Evictions: {decision_stats['evictions']}, Expirations: {decision_stats['expirations']}")
+    
+    # Close GeoIP
+    if geoip_lookup:
+        geoip_lookup.close()
     
     monitor_task.cancel()
     
