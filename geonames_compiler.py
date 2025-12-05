@@ -166,14 +166,13 @@ class GeoNamesCompiler:
     def build_continent_mappings(self) -> Dict:
         """Build continent code to country list mappings"""
         continent_countries = {}
-        
+    
         for iso2, data in self.countries.items():
             continent = data['continent']
             if continent not in continent_countries:
                 continent_countries[continent] = []
             continent_countries[continent].append(iso2)
-        
-        # Map continent names
+    
         continent_names = {
             'AF': 'AFRICA',
             'AN': 'ANTARCTICA',
@@ -183,22 +182,36 @@ class GeoNamesCompiler:
             'OC': 'OCEANIA',
             'SA': 'SOUTH_AMERICA'
         }
-        
+    
         self.continent_map = {}
         for code, name in continent_names.items():
+            countries = continent_countries.get(code, [])
+            # Create separate dicts for code and name
             self.continent_map[code] = {
                 'name': name,
-                'countries': continent_countries.get(code, [])
+                'countries': countries
             }
-            # Also map by name
-            self.continent_map[name] = self.continent_map[code]
-        
+            self.continent_map[name] = {
+                'name': name,
+                'countries': countries
+            }
+    
         logger.info(f"Built mappings for {len(continent_names)} continents")
+        for code, name in continent_names.items():
+            count = len(self.continent_map[code]['countries'])
+            logger.info(f"  {name} ({code}): {count} countries")
+    
         return self.continent_map
     
     def build_custom_regions(self) -> Dict:
         """Build custom region definitions"""
         regions = {
+            'EU_MEMBERS': {
+                'countries': ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 
+                              'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 
+                              'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'],
+                'description': 'European Union member states (2024)'
+             },
             'BALKANS': {
                 'countries': ['AL', 'BA', 'BG', 'HR', 'XK', 'MK', 'ME', 'RO', 'RS', 'SI'],
                 'description': 'Balkan Peninsula countries'
@@ -266,6 +279,35 @@ class GeoNamesCompiler:
         self.region_map = regions
         logger.info(f"Built {len(regions)} custom regions")
         return regions
+
+    def build_aggregate_regions(self) -> None:
+        """Auto-generate aggregate regions from sub-regions with same suffix"""
+        from collections import defaultdict
+    
+        aggregates = defaultdict(set)
+    
+        # Find all regions with suffixes like *_ASIA, *_AMERICA, *_EUROPE
+        for region_name, region_data in self.region_map.items():
+            if '_' in region_name:
+                suffix = region_name.split('_', 1)[1]
+                for country in region_data['countries']:
+                    aggregates[suffix].add(country)
+    
+        # Add or merge aggregates
+        for suffix, countries in aggregates.items():
+            # Check if exists in continent_map
+            if suffix in self.continent_map:
+                existing = set(self.continent_map[suffix].get('countries', []))
+                merged = existing | countries
+                self.continent_map[suffix]['countries'] = sorted(list(merged))
+                logger.info(f"  Merged into continent: {suffix} ({len(merged)} total countries)")
+            elif suffix not in self.region_map:
+                # Only add if doesn't exist at all
+                self.region_map[suffix] = {
+                    'countries': sorted(list(countries)),
+                    'description': f'Aggregated {suffix} (auto-generated from sub-regions)'
+                }
+                logger.info(f"  Auto-generated: {suffix} ({len(countries)} countries)")
     
     def compile_database(self, output_file="geonames_compiled.json") -> Path:
         """Compile all data into single JSON database"""
@@ -276,6 +318,7 @@ class GeoNamesCompiler:
         self.admin1 = self.parse_admin1_codes()
         self.build_continent_mappings()
         self.build_custom_regions()
+        self.build_aggregate_regions()
         
         # Build complete database
         database = {

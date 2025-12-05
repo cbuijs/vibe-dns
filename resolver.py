@@ -1084,6 +1084,15 @@ class DNSHandler:
                 section.clear()
                 section.extend(safe_rrsets)
 
+        # Check if answer section is empty after filtering
+        if not response.answer and matched_action:
+            if matched_action == "DROP":
+                req_logger.info(f"🔇 DROPPED | Reason: All IPs Filtered - Empty Response")
+                return None
+            elif matched_action == "BLOCK":
+                req_logger.info(f"⛔ BLOCKED | Reason: All IPs Filtered - Empty Response")
+                return self.create_block_response(request, request.question[0].name, qtype)
+
         self.collapse_cnames(response, req_logger)
         self.minimize_response(response)
         self.modify_ttls(response, req_logger)

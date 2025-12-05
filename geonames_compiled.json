@@ -23223,7 +23223,40 @@
     },
     "ASIA": {
       "name": "ASIA",
-      "countries": []
+      "countries": [
+        "AF",
+        "BD",
+        "BN",
+        "BT",
+        "CN",
+        "HK",
+        "ID",
+        "IN",
+        "JP",
+        "KG",
+        "KH",
+        "KP",
+        "KR",
+        "KZ",
+        "LA",
+        "LK",
+        "MM",
+        "MN",
+        "MO",
+        "MV",
+        "MY",
+        "NP",
+        "PH",
+        "PK",
+        "SG",
+        "TH",
+        "TJ",
+        "TL",
+        "TM",
+        "TW",
+        "UZ",
+        "VN"
+      ]
     },
     "EU": {
       "name": "EUROPE",
@@ -23263,6 +23296,38 @@
     }
   },
   "region_map": {
+    "EU_MEMBERS": {
+      "countries": [
+        "AT",
+        "BE",
+        "BG",
+        "HR",
+        "CY",
+        "CZ",
+        "DK",
+        "EE",
+        "FI",
+        "FR",
+        "DE",
+        "GR",
+        "HU",
+        "IE",
+        "IT",
+        "LV",
+        "LT",
+        "LU",
+        "MT",
+        "NL",
+        "PL",
+        "PT",
+        "RO",
+        "SK",
+        "SI",
+        "ES",
+        "SE"
+      ],
+      "description": "European Union member states (2024)"
+    },
     "BALKANS": {
       "countries": [
         "AL",
@@ -23448,6 +23513,73 @@
         "TW"
       ],
       "description": "East Asia"
+    },
+    "MEMBERS": {
+      "countries": [
+        "AT",
+        "BE",
+        "BG",
+        "CY",
+        "CZ",
+        "DE",
+        "DK",
+        "EE",
+        "ES",
+        "FI",
+        "FR",
+        "GR",
+        "HR",
+        "HU",
+        "IE",
+        "IT",
+        "LT",
+        "LU",
+        "LV",
+        "MT",
+        "NL",
+        "PL",
+        "PT",
+        "RO",
+        "SE",
+        "SI",
+        "SK"
+      ],
+      "description": "Aggregated MEMBERS (auto-generated from sub-regions)"
+    },
+    "EAST": {
+      "countries": [
+        "AE",
+        "BH",
+        "CY",
+        "EG",
+        "IL",
+        "IQ",
+        "IR",
+        "JO",
+        "KW",
+        "LB",
+        "OM",
+        "PS",
+        "QA",
+        "SA",
+        "SY",
+        "TR",
+        "YE"
+      ],
+      "description": "Aggregated EAST (auto-generated from sub-regions)"
+    },
+    "AMERICA": {
+      "countries": [
+        "BZ",
+        "CR",
+        "GT",
+        "HN",
+        "MX",
+        "NI",
+        "PA",
+        "SV"
+      ],
+      "description": "Aggregated AMERICA (auto-generated from sub-regions)"
     }
   },
   "country_name_map": {
