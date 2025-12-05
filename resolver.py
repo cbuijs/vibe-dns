@@ -183,33 +183,42 @@ class DNSCache(LRUCache):
     def get_dns(self, qname_norm: str, qtype: int, group: str = "default", scope: str = "DEFAULT") -> tuple[dns.message.Message | None, float, int]:
         """
         Get DNS response from cache.
-        
+    
         Args:
             qname_norm: NORMALIZED domain name (already lowercased/stripped)
             qtype: Query type
             group: Client group
             scope: Policy scope
-            
+        
         Returns:
             (message, ttl_remaining, hit_count)
         """
         key = (qname_norm, qtype, group, scope)
-        
-        result = self.get(key)
-        if result is None:
+    
+        # Access cache directly to handle tuple properly
+        if key not in self.cache:
+            self.stats.record_miss()
             return None, 0, 0
-        
-        record_bytes, expires = result
+    
+        # Move to end (LRU)
+        self.cache.move_to_end(key)
+    
+        # Unpack the stored tuple
+        record_bytes, expires = self.cache[key]
         now = time.time()
         ttl_remain = expires - now
-        
+    
         if ttl_remain <= 0:
+            del self.cache[key]
+            self.stats.record_expiration()
+            self.stats.record_miss()
             return None, 0, 0
-        
+    
         # Track hits for prefetch
         self.hit_counts[key] = self.hit_counts.get(key, 0) + 1
         hits = self.hit_counts[key]
-        
+        self.stats.record_hit()
+    
         try:
             msg = dns.message.from_wire(record_bytes)
             for section in (msg.answer, msg.authority, msg.additional):
@@ -218,7 +227,7 @@ class DNSCache(LRUCache):
             return msg, ttl_remain, hits
         except Exception as e:
             logger.warning(f"Cache entry corrupted: {e}")
-            self.delete(key)
+            del self.cache[key]
             return None, 0, 0
 
     def put_dns(self, message: dns.message.Message, qname_norm: str, qtype: int, group: str = "default", 
