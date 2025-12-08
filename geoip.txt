@@ -8,298 +8,526 @@ Format: @@TAG
 ------------------------------------------------------------------------------------------
  CONTINENTS
 ------------------------------------------------------------------------------------------
-Code   | Rule         | Name                     
---------------------------------------------------
-AF     | @@AF         | AFRICA
-AN     | @@AN         | ANTARCTICA
-AS     | @@AS         | ASIA
-EU     | @@EU         | EUROPE
-NA     | @@NA         | NORTH_AMERICA
-OC     | @@OC         | OCEANIA
-SA     | @@SA         | SOUTH_AMERICA
+Code   | Rule         | Name                          
+------------------------------------------------------------------------------------------
+AF     | @@AF         | AFRICA                        
        | @@AFRICA     | AFRICA (Alias)
+AN     | @@AN         | ANTARCTICA                    
        | @@ANTARCTICA | ANTARCTICA (Alias)
+AS     | @@AS         | ASIA                          
        | @@ASIA       | ASIA (Alias)
+EU     | @@EU         | EUROPE                        
        | @@EUROPE     | EUROPE (Alias)
-       | @@NORTH_AMERICA | NORTH_AMERICA (Alias)
+NA     | @@NA         | NORTH_AMERICA                 
+       | @@NORTH_AMERICA| NORTH_AMERICA (Alias)
+OC     | @@OC         | OCEANIA                       
        | @@OCEANIA    | OCEANIA (Alias)
-       | @@SOUTH_AMERICA | SOUTH_AMERICA (Alias)
+SA     | @@SA         | SOUTH_AMERICA                 
+       | @@SOUTH_AMERICA| SOUTH_AMERICA (Alias)
 
 ------------------------------------------------------------------------------------------
  REGIONS
 ------------------------------------------------------------------------------------------
+Region:      AFRICA
+Rule:        @@AFRICA
+Countries:   AO, BF, BI, BJ, BW, CD, CF, CG, CI, CM, CV, DJ, DZ, EG, EH, ER, ET, GA, GH, GM, GN, GQ, GW, KE, KM, LR, LS, LY, MA, MG, ML, MR, MU, MW, MZ, NA, NE, NG, RE, RW, SC, SD, SH, SL, SN, SO, SS, ST, SZ, TD, TG, TN, TZ, UG, YT, ZA, ZM, ZW
+----------------------------------------
 Region:      AL_MAGHRIB
 Rule:        @@AL_MAGHRIB
 Countries:   DZ, EH, LY, MA, MR, TN
 ----------------------------------------
+Region:      AMERICA
+Rule:        @@AMERICA
+Countries:   AG, AI, AR, AW, BB, BL, BM, BO, BQ, BR, BS, BZ, CA, CL, CO, CR, CU, CW, DM, DO, EC, FK, GD, GF, GL, GP, GT, GY, HN, HT, JM, KN, KY, LC, MF, MQ, MS, NI, PA, PE, PM, PR, PY, SR, SV, SX, TC, TT, US, UY, VC, VE, VG, VI
+----------------------------------------
+Region:      ARABIA
+Rule:        @@ARABIA
+Countries:   AE, BH, IQ, JO, KW, OM, QA, SA, YE
+----------------------------------------
+Region:      ARAB_GULF_COUNTRIES
+Rule:        @@ARAB_GULF_COUNTRIES
+Countries:   AE, BH, KW, OM, QA, SA
+----------------------------------------
+Region:      ARCTIC
+Rule:        @@ARCTIC
+Countries:   CA, DK, FI, IS, NO, RU, SE, US
+----------------------------------------
+Region:      ASEAN
+Rule:        @@ASEAN
+Countries:   BN, ID, KH, LA, MM, MY, PH, SG, TH, TL, VN
+----------------------------------------
+Region:      ASIA
+Rule:        @@ASIA
+Countries:   AE, AF, AM, AZ, BD, BH, BN, BT, CN, CY, GE, HK, ID, IL, IN, IQ, IR, JO, JP, KG, KH, KP, KR, KW, KZ, LA, LB, LK, MM, MN, MO, MV, MY, NP, OM, PH, PK, PS, QA, SA, SG, SY, TH, TJ, TL, TM, TR, TW, UZ, VN, YE
+----------------------------------------
+Region:      AUSTRALASIA
+Rule:        @@AUSTRALASIA
+Countries:   AU, NZ
+----------------------------------------
+Region:      AUSTRALIA_AND_NEW_ZEALAND
+Rule:        @@AUSTRALIA_AND_NEW_ZEALAND
+Countries:   AU, NZ
+----------------------------------------
+Region:      BALKANS
+Rule:        @@BALKANS
+Countries:   AL, BA, BG, GR, HR, ME, MK, RO, RS, SI, TR, XK
+----------------------------------------
+Region:      BALTIC_REGION
+Rule:        @@BALTIC_REGION
+Countries:   DE, DK, EE, FI, LT, LV, PL, RU, SE
+----------------------------------------
+Region:      BALTIC_STATES
+Rule:        @@BALTIC_STATES
+Countries:   EE, LT, LV
+----------------------------------------
+Region:      BENELUX
+Rule:        @@BENELUX
+Countries:   BE, LU, NL
+----------------------------------------
 Region:      BRICS
 Rule:        @@BRICS
 Countries:   AE, BR, CN, EG, ET, IN, IR, RU, ZA
+----------------------------------------
+Region:      CARIBBEAN
+Rule:        @@CARIBBEAN
+Countries:   AG, AI, AW, BB, BL, BQ, BS, CU, CW, DM, DO, GD, GP, HT, JM, KN, KY, LC, MF, MQ, MS, PR, SX, TC, TT, VC, VG, VI
+----------------------------------------
+Region:      CAUCASUS_REGION
+Rule:        @@CAUCASUS_REGION
+Countries:   AM, AZ, GE, RU
+----------------------------------------
+Region:      CENTRAL_AFRICA
+Rule:        @@CENTRAL_AFRICA
+Countries:   AO, CD, CF, CG, CM, GA, GQ, ST, TD
+----------------------------------------
+Region:      CENTRAL_AMERICA
+Rule:        @@CENTRAL_AMERICA
+Countries:   BZ, CR, GT, HN, NI, PA, SV
+----------------------------------------
+Region:      CENTRAL_ASIA
+Rule:        @@CENTRAL_ASIA
+Countries:   KG, KZ, TJ, TM, UZ
+----------------------------------------
+Region:      CENTRAL_EUROPE
+Rule:        @@CENTRAL_EUROPE
+Countries:   AT, CH, CZ, DE, HU, LI, PL, SI, SK
+----------------------------------------
+Region:      DENAKIL
+Rule:        @@DENAKIL
+Countries:   DJ, ER, ET
+----------------------------------------
+Region:      EASTERN_AFRICA
+Rule:        @@EASTERN_AFRICA
+Countries:   BI, DJ, ER, ET, KE, KM, MG, MU, MW, MZ, RE, RW, SC, SO, SS, TZ, UG, YT, ZM, ZW
+----------------------------------------
+Region:      EASTERN_ASIA
+Rule:        @@EASTERN_ASIA
+Countries:   CN, HK, JP, KP, KR, MN, MO, TW
+----------------------------------------
+Region:      EASTERN_EUROPE
+Rule:        @@EASTERN_EUROPE
+Countries:   BG, BY, CZ, HU, MD, PL, RO, RU, SK, UA
+----------------------------------------
+Region:      EEA
+Rule:        @@EEA
+Countries:   AT, BE, BG, CY, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IE, IS, IT, LI, LT, LU, LV, MT, NL, NO, PL, PT, RO, SE, SI, SK
+----------------------------------------
+Region:      EUROPE
+Rule:        @@EUROPE
+Countries:   AD, AL, AT, AX, BA, BE, BG, BY, CH, CZ, DE, DK, EE, ES, FI, FO, FR, GB, GG, GI, GR, HR, HU, IE, IM, IS, IT, JE, LI, LT, LU, LV, MC, MD, ME, MK, MT, NL, NO, PL, PT, RO, RS, RU, SE, SI, SJ, SK, SM, UA, VA
 ----------------------------------------
 Region:      EU_MEMBERS
 Rule:        @@EU_MEMBERS
 Description: European Union member states
 Countries:   AT, BE, BG, CY, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK
 ----------------------------------------
-Region:      UK
-Rule:        @@UK
-Countries:   GB
+Region:      FIVE_EYES
+Rule:        @@FIVE_EYES
+Countries:   AU, CA, GB, NZ, US
+----------------------------------------
+Region:      G5_SAHEL
+Rule:        @@G5_SAHEL
+Countries:   BF, ML, MR, NE, TD
+----------------------------------------
+Region:      G7
+Rule:        @@G7
+Countries:   CA, DE, FR, GB, IT, JP, US
+----------------------------------------
+Region:      GCC
+Rule:        @@GCC
+Countries:   AE, BH, KW, OM, QA, SA
+----------------------------------------
+Region:      HORN_OF_AFRICA
+Rule:        @@HORN_OF_AFRICA
+Countries:   DJ, ER, ET, SO
+----------------------------------------
+Region:      INDOCHINA
+Rule:        @@INDOCHINA
+Countries:   KH, LA, MM, MY, TH, VN
+----------------------------------------
+Region:      LATIN_AMERICA
+Rule:        @@LATIN_AMERICA
+Countries:   AR, BO, BR, BZ, CL, CO, CR, CU, DO, EC, FK, GF, GT, GY, HN, HT, MX, NI, PA, PE, PY, SR, SV, UY, VE
+----------------------------------------
+Region:      LEVANT
+Rule:        @@LEVANT
+Countries:   CY, IL, JO, LB, PS, SY
+----------------------------------------
+Region:      MELANESIA
+Rule:        @@MELANESIA
+Countries:   FJ, NC, PG, SB, VU
+----------------------------------------
+Region:      MICRONESIA
+Rule:        @@MICRONESIA
+Countries:   FM, GU, KI, MH, MP, NR, PW
+----------------------------------------
+Region:      MIDDLE_AMERICA
+Rule:        @@MIDDLE_AMERICA
+Countries:   AG, AI, AW, BB, BL, BQ, BS, BZ, CR, CU, CW, DM, DO, GD, GP, GT, HN, HT, JM, KN, KY, LC, MF, MQ, MS, MX, NI, PA, PR, SV, SX, TC, TT, VC, VG, VI
+----------------------------------------
+Region:      MIDDLE_EAST
+Rule:        @@MIDDLE_EAST
+Countries:   AE, BH, CY, EG, IL, IQ, IR, JO, KW, LB, OM, PS, QA, SA, SY, TR, YE
+----------------------------------------
+Region:      MOSQUITIA
+Rule:        @@MOSQUITIA
+Countries:   HN, NI
+----------------------------------------
+Region:      NATO
+Rule:        @@NATO
+Countries:   AL, BE, BG, CA, CZ, DE, DK, EE, ES, FI, FR, GB, GR, HR, HU, IS, IT, LT, LU, LV, ME, MK, NL, NO, PL, PT, RO, SE, SI, SK, TR, US
+----------------------------------------
+Region:      NORDIC
+Rule:        @@NORDIC
+Countries:   AX, DK, FI, FO, GL, IS, NO, SE, SJ
+----------------------------------------
+Region:      NORTHEAST_AFRICA
+Rule:        @@NORTHEAST_AFRICA
+Countries:   EG, SD, SS
+----------------------------------------
+Region:      NORTHERN_AFRICA
+Rule:        @@NORTHERN_AFRICA
+Countries:   DZ, EG, EH, LY, MA, SD, TN
+----------------------------------------
+Region:      NORTHERN_AMERICA
+Rule:        @@NORTHERN_AMERICA
+Countries:   BM, CA, GL, PM, US
+----------------------------------------
+Region:      NORTHERN_EUROPE
+Rule:        @@NORTHERN_EUROPE
+Countries:   AX, DK, EE, FI, FO, GB, GG, IE, IM, IS, JE, LT, LV, NO, SE, SJ
+----------------------------------------
+Region:      OFAC
+Rule:        @@OFAC
+Countries:   BA, BI, BY, CD, CF, CG, CI, CN, CU, CY, ER, ET, HK, HT, IQ, IR, IT, KP, LB, LK, LR, LY, MK, MM, NI, RO, RU, SD, SO, SS, SY, UA, VE, VN, XK, YE, ZW
+----------------------------------------
+Region:      POLYNESIA
+Rule:        @@POLYNESIA
+Countries:   AS, CK, NU, PF, PN, TO, TV, WF, WS
+----------------------------------------
+Region:      SAHEL
+Rule:        @@SAHEL
+Countries:   BF, GM, ML, MR, NE, NG, SD, SN, TD
+----------------------------------------
+Region:      SCANDINAVIA
+Rule:        @@SCANDINAVIA
+Countries:   DK, NO, SE
+----------------------------------------
+Region:      SCHENGEN
+Rule:        @@SCHENGEN
+Countries:   AT, BE, BG, CH, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IS, IT, LI, LT, LU, LV, MT, NL, NO, PL, PT, RO, SE, SI, SK
+----------------------------------------
+Region:      SOUTHERN_AFRICA
+Rule:        @@SOUTHERN_AFRICA
+Countries:   BW, LS, NA, SZ, ZA
+----------------------------------------
+Region:      SOUTHERN_ASIA
+Rule:        @@SOUTHERN_ASIA
+Countries:   AF, BD, BT, IN, IR, LK, MV, NP, PK
+----------------------------------------
+Region:      SOUTHERN_EUROPE
+Rule:        @@SOUTHERN_EUROPE
+Countries:   AD, AL, BA, ES, GI, GR, HR, IT, ME, MK, MT, PT, RS, SI, SM, VA
+----------------------------------------
+Region:      SOUTH_EASTERN_ASIA
+Rule:        @@SOUTH_EASTERN_ASIA
+Countries:   BN, ID, KH, LA, MM, MY, PH, SG, TH, TL, VN
+----------------------------------------
+Region:      SUB_SAHARAN_AFRICA
+Rule:        @@SUB_SAHARAN_AFRICA
+Countries:   AO, BF, BI, BJ, BW, CD, CF, CG, CI, CM, CV, DJ, ER, ET, GA, GH, GM, GN, GQ, GW, KE, KM, LR, LS, MG, ML, MR, MU, MW, MZ, NA, NE, NG, RE, RW, SC, SH, SL, SN, SO, SS, ST, SZ, TD, TG, TZ, UG, YT, ZA, ZM, ZW
+----------------------------------------
+Region:      WESTERN_AFRICA
+Rule:        @@WESTERN_AFRICA
+Countries:   BF, BJ, CI, CV, GH, GM, GN, GW, LR, ML, MR, NE, NG, SH, SL, SN, TG
+----------------------------------------
+Region:      WESTERN_ASIA
+Rule:        @@WESTERN_ASIA
+Countries:   AE, AM, AZ, BH, CY, GE, IL, IQ, JO, KW, LB, OM, PS, QA, SA, SY, TR, YE
+----------------------------------------
+Region:      WESTERN_EUROPE
+Rule:        @@WESTERN_EUROPE
+Countries:   AT, BE, CH, DE, FR, LI, LU, MC, NL
+----------------------------------------
+Region:      WEST_INDIES
+Rule:        @@WEST_INDIES
+Countries:   AG, AI, AW, BB, BL, BQ, BS, CU, CW, DM, DO, GD, GP, HT, JM, KN, KY, LC, MF, MQ, MS, PR, SX, TC, TT, VC, VG, VI
 ----------------------------------------
 
 ------------------------------------------------------------------------------------------
  COUNTRIES (ISO 3166-1 alpha-2)
 ------------------------------------------------------------------------------------------
-ISO    | Rule         | Continent  | Name
-------------------------------------------------------------
-AD     | @@AD         | EU         | Andorra
-AE     | @@AE         | AS         | United Arab Emirates
-AF     | @@AF         | AS         | Afghanistan
-AG     | @@AG         | NA         | Antigua and Barbuda
-AI     | @@AI         | NA         | Anguilla
-AL     | @@AL         | EU         | Albania
-AM     | @@AM         | AS         | Armenia
-AN     | @@AN         | NA         | Netherlands Antilles
-AO     | @@AO         | AF         | Angola
-AQ     | @@AQ         | AN         | Antarctica
-AR     | @@AR         | SA         | Argentina
-AS     | @@AS         | OC         | American Samoa
-AT     | @@AT         | EU         | Austria
-AU     | @@AU         | OC         | Australia
-AW     | @@AW         | NA         | Aruba
-AX     | @@AX         | EU         | Aland Islands
-AZ     | @@AZ         | AS         | Azerbaijan
-BA     | @@BA         | EU         | Bosnia and Herzegovina
-BB     | @@BB         | NA         | Barbados
-BD     | @@BD         | AS         | Bangladesh
-BE     | @@BE         | EU         | Belgium
-BF     | @@BF         | AF         | Burkina Faso
-BG     | @@BG         | EU         | Bulgaria
-BH     | @@BH         | AS         | Bahrain
-BI     | @@BI         | AF         | Burundi
-BJ     | @@BJ         | AF         | Benin
-BL     | @@BL         | NA         | Saint Barthelemy
-BM     | @@BM         | NA         | Bermuda
-BN     | @@BN         | AS         | Brunei
-BO     | @@BO         | SA         | Bolivia
-BQ     | @@BQ         | NA         | Bonaire, Saint Eustatius and Saba 
-BR     | @@BR         | SA         | Brazil
-BS     | @@BS         | NA         | Bahamas
-BT     | @@BT         | AS         | Bhutan
-BV     | @@BV         | AN         | Bouvet Island
-BW     | @@BW         | AF         | Botswana
-BY     | @@BY         | EU         | Belarus
-BZ     | @@BZ         | NA         | Belize
-CA     | @@CA         | NA         | Canada
-CC     | @@CC         | AS         | Cocos Islands
-CD     | @@CD         | AF         | Democratic Republic of the Congo
-CF     | @@CF         | AF         | Central African Republic
-CG     | @@CG         | AF         | Republic of the Congo
-CH     | @@CH         | EU         | Switzerland
-CI     | @@CI         | AF         | Ivory Coast
-CK     | @@CK         | OC         | Cook Islands
-CL     | @@CL         | SA         | Chile
-CM     | @@CM         | AF         | Cameroon
-CN     | @@CN         | AS         | China
-CO     | @@CO         | SA         | Colombia
-CR     | @@CR         | NA         | Costa Rica
-CS     | @@CS         | EU         | Serbia and Montenegro
-CU     | @@CU         | NA         | Cuba
-CV     | @@CV         | AF         | Cabo Verde
-CW     | @@CW         | NA         | Curacao
-CX     | @@CX         | OC         | Christmas Island
-CY     | @@CY         | EU         | Cyprus
-CZ     | @@CZ         | EU         | Czechia
-DE     | @@DE         | EU         | Germany
-DJ     | @@DJ         | AF         | Djibouti
-DK     | @@DK         | EU         | Denmark
-DM     | @@DM         | NA         | Dominica
-DO     | @@DO         | NA         | Dominican Republic
-DZ     | @@DZ         | AF         | Algeria
-EC     | @@EC         | SA         | Ecuador
-EE     | @@EE         | EU         | Estonia
-EG     | @@EG         | AF         | Egypt
-EH     | @@EH         | AF         | Western Sahara
-ER     | @@ER         | AF         | Eritrea
-ES     | @@ES         | EU         | Spain
-ET     | @@ET         | AF         | Ethiopia
-FI     | @@FI         | EU         | Finland
-FJ     | @@FJ         | OC         | Fiji
-FK     | @@FK         | SA         | Falkland Islands
-FM     | @@FM         | OC         | Micronesia
-FO     | @@FO         | EU         | Faroe Islands
-FR     | @@FR         | EU         | France
-GA     | @@GA         | AF         | Gabon
-GB     | @@GB         | EU         | United Kingdom
-GD     | @@GD         | NA         | Grenada
-GE     | @@GE         | AS         | Georgia
-GF     | @@GF         | SA         | French Guiana
-GG     | @@GG         | EU         | Guernsey
-GH     | @@GH         | AF         | Ghana
-GI     | @@GI         | EU         | Gibraltar
-GL     | @@GL         | NA         | Greenland
-GM     | @@GM         | AF         | Gambia
-GN     | @@GN         | AF         | Guinea
-GP     | @@GP         | NA         | Guadeloupe
-GQ     | @@GQ         | AF         | Equatorial Guinea
-GR     | @@GR         | EU         | Greece
+ISO    | Rule         | Continent  | Name                                    
+------------------------------------------------------------------------------------------
+AD     | @@AD         | EU         | Andorra                                 
+AE     | @@AE         | AS         | United Arab Emirates                    
+AF     | @@AF         | AS         | Afghanistan                             
+AG     | @@AG         | NA         | Antigua and Barbuda                     
+AI     | @@AI         | NA         | Anguilla                                
+AL     | @@AL         | EU         | Albania                                 
+AM     | @@AM         | AS         | Armenia                                 
+AN     | @@AN         | NA         | Netherlands Antilles                    
+AO     | @@AO         | AF         | Angola                                  
+AQ     | @@AQ         | AN         | Antarctica                              
+AR     | @@AR         | SA         | Argentina                               
+AS     | @@AS         | OC         | American Samoa                          
+AT     | @@AT         | EU         | Austria                                 
+AU     | @@AU         | OC         | Australia                               
+AW     | @@AW         | NA         | Aruba                                   
+AX     | @@AX         | EU         | Aland Islands                           
+AZ     | @@AZ         | AS         | Azerbaijan                              
+BA     | @@BA         | EU         | Bosnia and Herzegovina                  
+BB     | @@BB         | NA         | Barbados                                
+BD     | @@BD         | AS         | Bangladesh                              
+BE     | @@BE         | EU         | Belgium                                 
+BF     | @@BF         | AF         | Burkina Faso                            
+BG     | @@BG         | EU         | Bulgaria                                
+BH     | @@BH         | AS         | Bahrain                                 
+BI     | @@BI         | AF         | Burundi                                 
+BJ     | @@BJ         | AF         | Benin                                   
+BL     | @@BL         | NA         | Saint Barthelemy                        
+BM     | @@BM         | NA         | Bermuda                                 
+BN     | @@BN         | AS         | Brunei                                  
+BO     | @@BO         | SA         | Bolivia                                 
+BQ     | @@BQ         | NA         | Bonaire, Saint Eustatius and Saba       
+BR     | @@BR         | SA         | Brazil                                  
+BS     | @@BS         | NA         | Bahamas                                 
+BT     | @@BT         | AS         | Bhutan                                  
+BV     | @@BV         | AN         | Bouvet Island                           
+BW     | @@BW         | AF         | Botswana                                
+BY     | @@BY         | EU         | Belarus                                 
+BZ     | @@BZ         | NA         | Belize                                  
+CA     | @@CA         | NA         | Canada                                  
+CC     | @@CC         | AS         | Cocos Islands                           
+CD     | @@CD         | AF         | Democratic Republic of the Congo        
+CF     | @@CF         | AF         | Central African Republic                
+CG     | @@CG         | AF         | Republic of the Congo                   
+CH     | @@CH         | EU         | Switzerland                             
+CI     | @@CI         | AF         | Ivory Coast                             
+CK     | @@CK         | OC         | Cook Islands                            
+CL     | @@CL         | SA         | Chile                                   
+CM     | @@CM         | AF         | Cameroon                                
+CN     | @@CN         | AS         | China                                   
+CO     | @@CO         | SA         | Colombia                                
+CR     | @@CR         | NA         | Costa Rica                              
+CS     | @@CS         | EU         | Serbia and Montenegro                   
+CU     | @@CU         | NA         | Cuba                                    
+CV     | @@CV         | AF         | Cabo Verde                              
+CW     | @@CW         | NA         | Curacao                                 
+CX     | @@CX         | OC         | Christmas Island                        
+CY     | @@CY         | EU         | Cyprus                                  
+CZ     | @@CZ         | EU         | Czechia                                 
+DE     | @@DE         | EU         | Germany                                 
+DJ     | @@DJ         | AF         | Djibouti                                
+DK     | @@DK         | EU         | Denmark                                 
+DM     | @@DM         | NA         | Dominica                                
+DO     | @@DO         | NA         | Dominican Republic                      
+DZ     | @@DZ         | AF         | Algeria                                 
+EC     | @@EC         | SA         | Ecuador                                 
+EE     | @@EE         | EU         | Estonia                                 
+EG     | @@EG         | AF         | Egypt                                   
+EH     | @@EH         | AF         | Western Sahara                          
+ER     | @@ER         | AF         | Eritrea                                 
+ES     | @@ES         | EU         | Spain                                   
+ET     | @@ET         | AF         | Ethiopia                                
+FI     | @@FI         | EU         | Finland                                 
+FJ     | @@FJ         | OC         | Fiji                                    
+FK     | @@FK         | SA         | Falkland Islands                        
+FM     | @@FM         | OC         | Micronesia                              
+FO     | @@FO         | EU         | Faroe Islands                           
+FR     | @@FR         | EU         | France                                  
+GA     | @@GA         | AF         | Gabon                                   
+GB     | @@GB         | EU         | United Kingdom                          
+GD     | @@GD         | NA         | Grenada                                 
+GE     | @@GE         | AS         | Georgia                                 
+GF     | @@GF         | SA         | French Guiana                           
+GG     | @@GG         | EU         | Guernsey                                
+GH     | @@GH         | AF         | Ghana                                   
+GI     | @@GI         | EU         | Gibraltar                               
+GL     | @@GL         | NA         | Greenland                               
+GM     | @@GM         | AF         | Gambia                                  
+GN     | @@GN         | AF         | Guinea                                  
+GP     | @@GP         | NA         | Guadeloupe                              
+GQ     | @@GQ         | AF         | Equatorial Guinea                       
+GR     | @@GR         | EU         | Greece                                  
 GS     | @@GS         | AN         | South Georgia and the South Sandwich Islands
-GT     | @@GT         | NA         | Guatemala
-GU     | @@GU         | OC         | Guam
-GW     | @@GW         | AF         | Guinea-Bissau
-GY     | @@GY         | SA         | Guyana
-HK     | @@HK         | AS         | Hong Kong
-HM     | @@HM         | AN         | Heard Island and McDonald Islands
-HN     | @@HN         | NA         | Honduras
-HR     | @@HR         | EU         | Croatia
-HT     | @@HT         | NA         | Haiti
-HU     | @@HU         | EU         | Hungary
-ID     | @@ID         | AS         | Indonesia
-IE     | @@IE         | EU         | Ireland
-IL     | @@IL         | AS         | Israel
-IM     | @@IM         | EU         | Isle of Man
-IN     | @@IN         | AS         | India
-IO     | @@IO         | AS         | British Indian Ocean Territory
-IQ     | @@IQ         | AS         | Iraq
-IR     | @@IR         | AS         | Iran
-IS     | @@IS         | EU         | Iceland
-IT     | @@IT         | EU         | Italy
-JE     | @@JE         | EU         | Jersey
-JM     | @@JM         | NA         | Jamaica
-JO     | @@JO         | AS         | Jordan
-JP     | @@JP         | AS         | Japan
-KE     | @@KE         | AF         | Kenya
-KG     | @@KG         | AS         | Kyrgyzstan
-KH     | @@KH         | AS         | Cambodia
-KI     | @@KI         | OC         | Kiribati
-KM     | @@KM         | AF         | Comoros
-KN     | @@KN         | NA         | Saint Kitts and Nevis
-KP     | @@KP         | AS         | North Korea
-KR     | @@KR         | AS         | South Korea
-KW     | @@KW         | AS         | Kuwait
-KY     | @@KY         | NA         | Cayman Islands
-KZ     | @@KZ         | AS         | Kazakhstan
-LA     | @@LA         | AS         | Laos
-LB     | @@LB         | AS         | Lebanon
-LC     | @@LC         | NA         | Saint Lucia
-LI     | @@LI         | EU         | Liechtenstein
-LK     | @@LK         | AS         | Sri Lanka
-LR     | @@LR         | AF         | Liberia
-LS     | @@LS         | AF         | Lesotho
-LT     | @@LT         | EU         | Lithuania
-LU     | @@LU         | EU         | Luxembourg
-LV     | @@LV         | EU         | Latvia
-LY     | @@LY         | AF         | Libya
-MA     | @@MA         | AF         | Morocco
-MC     | @@MC         | EU         | Monaco
-MD     | @@MD         | EU         | Moldova
-ME     | @@ME         | EU         | Montenegro
-MF     | @@MF         | NA         | Saint Martin
-MG     | @@MG         | AF         | Madagascar
-MH     | @@MH         | OC         | Marshall Islands
-MK     | @@MK         | EU         | North Macedonia
-ML     | @@ML         | AF         | Mali
-MM     | @@MM         | AS         | Myanmar
-MN     | @@MN         | AS         | Mongolia
-MO     | @@MO         | AS         | Macao
-MP     | @@MP         | OC         | Northern Mariana Islands
-MQ     | @@MQ         | NA         | Martinique
-MR     | @@MR         | AF         | Mauritania
-MS     | @@MS         | NA         | Montserrat
-MT     | @@MT         | EU         | Malta
-MU     | @@MU         | AF         | Mauritius
-MV     | @@MV         | AS         | Maldives
-MW     | @@MW         | AF         | Malawi
-MX     | @@MX         | NA         | Mexico
-MY     | @@MY         | AS         | Malaysia
-MZ     | @@MZ         | AF         | Mozambique
-NA     | @@NA         | AF         | Namibia
-NC     | @@NC         | OC         | New Caledonia
-NE     | @@NE         | AF         | Niger
-NF     | @@NF         | OC         | Norfolk Island
-NG     | @@NG         | AF         | Nigeria
-NI     | @@NI         | NA         | Nicaragua
-NL     | @@NL         | EU         | The Netherlands
-NO     | @@NO         | EU         | Norway
-NP     | @@NP         | AS         | Nepal
-NR     | @@NR         | OC         | Nauru
-NU     | @@NU         | OC         | Niue
-NZ     | @@NZ         | OC         | New Zealand
-OM     | @@OM         | AS         | Oman
-PA     | @@PA         | NA         | Panama
-PE     | @@PE         | SA         | Peru
-PF     | @@PF         | OC         | French Polynesia
-PG     | @@PG         | OC         | Papua New Guinea
-PH     | @@PH         | AS         | Philippines
-PK     | @@PK         | AS         | Pakistan
-PL     | @@PL         | EU         | Poland
-PM     | @@PM         | NA         | Saint Pierre and Miquelon
-PN     | @@PN         | OC         | Pitcairn
-PR     | @@PR         | NA         | Puerto Rico
-PS     | @@PS         | AS         | Palestinian Territory
-PT     | @@PT         | EU         | Portugal
-PW     | @@PW         | OC         | Palau
-PY     | @@PY         | SA         | Paraguay
-QA     | @@QA         | AS         | Qatar
-RE     | @@RE         | AF         | Reunion
-RO     | @@RO         | EU         | Romania
-RS     | @@RS         | EU         | Serbia
-RU     | @@RU         | EU         | Russia
-RW     | @@RW         | AF         | Rwanda
-SA     | @@SA         | AS         | Saudi Arabia
-SB     | @@SB         | OC         | Solomon Islands
-SC     | @@SC         | AF         | Seychelles
-SD     | @@SD         | AF         | Sudan
-SE     | @@SE         | EU         | Sweden
-SG     | @@SG         | AS         | Singapore
-SH     | @@SH         | AF         | Saint Helena
-SI     | @@SI         | EU         | Slovenia
-SJ     | @@SJ         | EU         | Svalbard and Jan Mayen
-SK     | @@SK         | EU         | Slovakia
-SL     | @@SL         | AF         | Sierra Leone
-SM     | @@SM         | EU         | San Marino
-SN     | @@SN         | AF         | Senegal
-SO     | @@SO         | AF         | Somalia
-SR     | @@SR         | SA         | Suriname
-SS     | @@SS         | AF         | South Sudan
-ST     | @@ST         | AF         | Sao Tome and Principe
-SV     | @@SV         | NA         | El Salvador
-SX     | @@SX         | NA         | Sint Maarten
-SY     | @@SY         | AS         | Syria
-SZ     | @@SZ         | AF         | Eswatini
-TC     | @@TC         | NA         | Turks and Caicos Islands
-TD     | @@TD         | AF         | Chad
-TF     | @@TF         | AN         | French Southern Territories
-TG     | @@TG         | AF         | Togo
-TH     | @@TH         | AS         | Thailand
-TJ     | @@TJ         | AS         | Tajikistan
-TK     | @@TK         | OC         | Tokelau
-TL     | @@TL         | OC         | Timor Leste
-TM     | @@TM         | AS         | Turkmenistan
-TN     | @@TN         | AF         | Tunisia
-TO     | @@TO         | OC         | Tonga
-TR     | @@TR         | AS         | Turkey
-TT     | @@TT         | NA         | Trinidad and Tobago
-TV     | @@TV         | OC         | Tuvalu
-TW     | @@TW         | AS         | Taiwan
-TZ     | @@TZ         | AF         | Tanzania
-UA     | @@UA         | EU         | Ukraine
-UG     | @@UG         | AF         | Uganda
-UM     | @@UM         | OC         | United States Minor Outlying Islands
-US     | @@US         | NA         | United States
-UY     | @@UY         | SA         | Uruguay
-UZ     | @@UZ         | AS         | Uzbekistan
-VA     | @@VA         | EU         | Vatican
-VC     | @@VC         | NA         | Saint Vincent and the Grenadines
-VE     | @@VE         | SA         | Venezuela
-VG     | @@VG         | NA         | British Virgin Islands
-VI     | @@VI         | NA         | U.S. Virgin Islands
-VN     | @@VN         | AS         | Vietnam
-VU     | @@VU         | OC         | Vanuatu
-WF     | @@WF         | OC         | Wallis and Futuna
-WS     | @@WS         | OC         | Samoa
-XK     | @@XK         | EU         | Kosovo
-YE     | @@YE         | AS         | Yemen
-YT     | @@YT         | AF         | Mayotte
-ZA     | @@ZA         | AF         | South Africa
-ZM     | @@ZM         | AF         | Zambia
-ZW     | @@ZW         | AF         | Zimbabwe
+GT     | @@GT         | NA         | Guatemala                               
+GU     | @@GU         | OC         | Guam                                    
+GW     | @@GW         | AF         | Guinea-Bissau                           
+GY     | @@GY         | SA         | Guyana                                  
+HK     | @@HK         | AS         | Hong Kong                               
+HM     | @@HM         | AN         | Heard Island and McDonald Islands       
+HN     | @@HN         | NA         | Honduras                                
+HR     | @@HR         | EU         | Croatia                                 
+HT     | @@HT         | NA         | Haiti                                   
+HU     | @@HU         | EU         | Hungary                                 
+ID     | @@ID         | AS         | Indonesia                               
+IE     | @@IE         | EU         | Ireland                                 
+IL     | @@IL         | AS         | Israel                                  
+IM     | @@IM         | EU         | Isle of Man                             
+IN     | @@IN         | AS         | India                                   
+IO     | @@IO         | AS         | British Indian Ocean Territory          
+IQ     | @@IQ         | AS         | Iraq                                    
+IR     | @@IR         | AS         | Iran                                    
+IS     | @@IS         | EU         | Iceland                                 
+IT     | @@IT         | EU         | Italy                                   
+JE     | @@JE         | EU         | Jersey                                  
+JM     | @@JM         | NA         | Jamaica                                 
+JO     | @@JO         | AS         | Jordan                                  
+JP     | @@JP         | AS         | Japan                                   
+KE     | @@KE         | AF         | Kenya                                   
+KG     | @@KG         | AS         | Kyrgyzstan                              
+KH     | @@KH         | AS         | Cambodia                                
+KI     | @@KI         | OC         | Kiribati                                
+KM     | @@KM         | AF         | Comoros                                 
+KN     | @@KN         | NA         | Saint Kitts and Nevis                   
+KP     | @@KP         | AS         | North Korea                             
+KR     | @@KR         | AS         | South Korea                             
+KW     | @@KW         | AS         | Kuwait                                  
+KY     | @@KY         | NA         | Cayman Islands                          
+KZ     | @@KZ         | AS         | Kazakhstan                              
+LA     | @@LA         | AS         | Laos                                    
+LB     | @@LB         | AS         | Lebanon                                 
+LC     | @@LC         | NA         | Saint Lucia                             
+LI     | @@LI         | EU         | Liechtenstein                           
+LK     | @@LK         | AS         | Sri Lanka                               
+LR     | @@LR         | AF         | Liberia                                 
+LS     | @@LS         | AF         | Lesotho                                 
+LT     | @@LT         | EU         | Lithuania                               
+LU     | @@LU         | EU         | Luxembourg                              
+LV     | @@LV         | EU         | Latvia                                  
+LY     | @@LY         | AF         | Libya                                   
+MA     | @@MA         | AF         | Morocco                                 
+MC     | @@MC         | EU         | Monaco                                  
+MD     | @@MD         | EU         | Moldova                                 
+ME     | @@ME         | EU         | Montenegro                              
+MF     | @@MF         | NA         | Saint Martin                            
+MG     | @@MG         | AF         | Madagascar                              
+MH     | @@MH         | OC         | Marshall Islands                        
+MK     | @@MK         | EU         | North Macedonia                         
+ML     | @@ML         | AF         | Mali                                    
+MM     | @@MM         | AS         | Myanmar                                 
+MN     | @@MN         | AS         | Mongolia                                
+MO     | @@MO         | AS         | Macao                                   
+MP     | @@MP         | OC         | Northern Mariana Islands                
+MQ     | @@MQ         | NA         | Martinique                              
+MR     | @@MR         | AF         | Mauritania                              
+MS     | @@MS         | NA         | Montserrat                              
+MT     | @@MT         | EU         | Malta                                   
+MU     | @@MU         | AF         | Mauritius                               
+MV     | @@MV         | AS         | Maldives                                
+MW     | @@MW         | AF         | Malawi                                  
+MX     | @@MX         | NA         | Mexico                                  
+MY     | @@MY         | AS         | Malaysia                                
+MZ     | @@MZ         | AF         | Mozambique                              
+NA     | @@NA         | AF         | Namibia                                 
+NC     | @@NC         | OC         | New Caledonia                           
+NE     | @@NE         | AF         | Niger                                   
+NF     | @@NF         | OC         | Norfolk Island                          
+NG     | @@NG         | AF         | Nigeria                                 
+NI     | @@NI         | NA         | Nicaragua                               
+NL     | @@NL         | EU         | The Netherlands                         
+NO     | @@NO         | EU         | Norway                                  
+NP     | @@NP         | AS         | Nepal                                   
+NR     | @@NR         | OC         | Nauru                                   
+NU     | @@NU         | OC         | Niue                                    
+NZ     | @@NZ         | OC         | New Zealand                             
+OM     | @@OM         | AS         | Oman                                    
+PA     | @@PA         | NA         | Panama                                  
+PE     | @@PE         | SA         | Peru                                    
+PF     | @@PF         | OC         | French Polynesia                        
+PG     | @@PG         | OC         | Papua New Guinea                        
+PH     | @@PH         | AS         | Philippines                             
+PK     | @@PK         | AS         | Pakistan                                
+PL     | @@PL         | EU         | Poland                                  
+PM     | @@PM         | NA         | Saint Pierre and Miquelon               
+PN     | @@PN         | OC         | Pitcairn                                
+PR     | @@PR         | NA         | Puerto Rico                             
+PS     | @@PS         | AS         | Palestinian Territory                   
+PT     | @@PT         | EU         | Portugal                                
+PW     | @@PW         | OC         | Palau                                   
+PY     | @@PY         | SA         | Paraguay                                
+QA     | @@QA         | AS         | Qatar                                   
+RE     | @@RE         | AF         | Reunion                                 
+RO     | @@RO         | EU         | Romania                                 
+RS     | @@RS         | EU         | Serbia                                  
+RU     | @@RU         | EU         | Russia                                  
+RW     | @@RW         | AF         | Rwanda                                  
+SA     | @@SA         | AS         | Saudi Arabia                            
+SB     | @@SB         | OC         | Solomon Islands                         
+SC     | @@SC         | AF         | Seychelles                              
+SD     | @@SD         | AF         | Sudan                                   
+SE     | @@SE         | EU         | Sweden                                  
+SG     | @@SG         | AS         | Singapore                               
+SH     | @@SH         | AF         | Saint Helena                            
+SI     | @@SI         | EU         | Slovenia                                
+SJ     | @@SJ         | EU         | Svalbard and Jan Mayen                  
+SK     | @@SK         | EU         | Slovakia                                
+SL     | @@SL         | AF         | Sierra Leone                            
+SM     | @@SM         | EU         | San Marino                              
+SN     | @@SN         | AF         | Senegal                                 
+SO     | @@SO         | AF         | Somalia                                 
+SR     | @@SR         | SA         | Suriname                                
+SS     | @@SS         | AF         | South Sudan                             
+ST     | @@ST         | AF         | Sao Tome and Principe                   
+SV     | @@SV         | NA         | El Salvador                             
+SX     | @@SX         | NA         | Sint Maarten                            
+SY     | @@SY         | AS         | Syria                                   
+SZ     | @@SZ         | AF         | Eswatini                                
+TC     | @@TC         | NA         | Turks and Caicos Islands                
+TD     | @@TD         | AF         | Chad                                    
+TF     | @@TF         | AN         | French Southern Territories             
+TG     | @@TG         | AF         | Togo                                    
+TH     | @@TH         | AS         | Thailand                                
+TJ     | @@TJ         | AS         | Tajikistan                              
+TK     | @@TK         | OC         | Tokelau                                 
+TL     | @@TL         | OC         | Timor Leste                             
+TM     | @@TM         | AS         | Turkmenistan                            
+TN     | @@TN         | AF         | Tunisia                                 
+TO     | @@TO         | OC         | Tonga                                   
+TR     | @@TR         | AS         | Turkey                                  
+TT     | @@TT         | NA         | Trinidad and Tobago                     
+TV     | @@TV         | OC         | Tuvalu                                  
+TW     | @@TW         | AS         | Taiwan                                  
+TZ     | @@TZ         | AF         | Tanzania                                
+UA     | @@UA         | EU         | Ukraine                                 
+UG     | @@UG         | AF         | Uganda                                  
+UM     | @@UM         | OC         | United States Minor Outlying Islands    
+US     | @@US         | NA         | United States                           
+UY     | @@UY         | SA         | Uruguay                                 
+UZ     | @@UZ         | AS         | Uzbekistan                              
+VA     | @@VA         | EU         | Vatican                                 
+VC     | @@VC         | NA         | Saint Vincent and the Grenadines        
+VE     | @@VE         | SA         | Venezuela                               
+VG     | @@VG         | NA         | British Virgin Islands                  
+VI     | @@VI         | NA         | U.S. Virgin Islands                     
+VN     | @@VN         | AS         | Vietnam                                 
+VU     | @@VU         | OC         | Vanuatu                                 
+WF     | @@WF         | OC         | Wallis and Futuna                       
+WS     | @@WS         | OC         | Samoa                                   
+XK     | @@XK         | EU         | Kosovo                                  
+YE     | @@YE         | AS         | Yemen                                   
+YT     | @@YT         | AF         | Mayotte                                 
+ZA     | @@ZA         | AF         | South Africa                            
+ZM     | @@ZM         | AF         | Zambia                                  
+ZW     | @@ZW         | AF         | Zimbabwe                                

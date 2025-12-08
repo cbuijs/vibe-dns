@@ -2,15 +2,11 @@
 # filename: geoip_compiler.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 7.1.0 (Fix Metadata Storage)
+# Version: 7.2.0 (Unified Region Definitions)
 # -----------------------------------------------------------------------------
 """
 Unified compiler for GeoIP databases.
 Compiles MMDB OR JSON + GeoNames into a memory-mappable binary format.
-
-Updates:
-- Correctly stores metadata (continent names, country codes) for logging.
-- Aligns database keys (country_code) with Resolver expectations.
 """
 
 import urllib.request
@@ -23,6 +19,12 @@ import socket
 import orjson as json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set
+from collections import defaultdict
+
+from geo_regions import (
+    CONTINENTS, REGION_DEFINITIONS, COUNTRY_TO_CONTINENT,
+    get_continent_name, get_country_continent, get_country_regions
+)
 
 # Setup logging
 logging.basicConfig(
@@ -90,7 +92,8 @@ class GeoNamesCompiler:
     
     def download_file(self, filename: str) -> Path:
         local_path = self.cache_dir / filename
-        if local_path.exists(): return local_path
+        if local_path.exists(): 
+            return local_path
         url = GEONAMES_BASE_URL + filename
         logger.info(f"  ⬇ Downloading {filename}...")
         try:
@@ -98,7 +101,8 @@ class GeoNamesCompiler:
             return local_path
         except Exception:
             logger.warning(f"    Download failed: {filename}. Using empty fallback.")
-            with open(local_path, 'w') as f: f.write("")
+            with open(local_path, 'w') as f: 
+                f.write("")
             return local_path
     
     def parse_country_info(self) -> Dict:
@@ -108,13 +112,16 @@ class GeoNamesCompiler:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    if not line.strip() or line.startswith('#'): continue
+                    if not line.strip() or line.startswith('#'): 
+                        continue
                     parts = line.split('\t')
-                    if len(parts) < 19: continue
+                    if len(parts) < 19: 
+                        continue
                     iso2, name, continent = parts[0], parts[4], parts[8]
                     countries[iso2] = {'iso2': iso2, 'name': name, 'continent': continent}
                     self.country_name_map[name.upper()] = iso2
-        except Exception: pass
+        except Exception: 
+            pass
         return countries
     
     def build_continent_mappings(self) -> Dict:
@@ -122,45 +129,17 @@ class GeoNamesCompiler:
         for iso2, data in self.countries.items():
             continent_countries[data['continent']].append(iso2)
         
-        # Define the aliases explicitly
-        continent_names = {
-            'AF': 'AFRICA',
-            'AN': 'ANTARCTICA',
-            'AS': 'ASIA',
-            'EU': 'EUROPE',
-            'NA': 'NORTH_AMERICA',
-            'OC': 'OCEANIA',
-            'SA': 'SOUTH_AMERICA'
-        }
-        
         self.continent_map = {}
-        for code, name in continent_names.items():
+        for code, info in CONTINENTS.items():
             countries = continent_countries.get(code, [])
-            # Map both the 2-letter code AND the full name to the country list
-            self.continent_map[code] = {'name': name, 'countries': countries}
-            self.continent_map[name] = {'name': name, 'countries': countries}
+            self.continent_map[code] = {'name': info['name'], 'countries': countries}
+            self.continent_map[info['name']] = {'name': info['name'], 'countries': countries}
             
         return self.continent_map
     
     def build_custom_regions(self) -> Dict:
-        # (Same region list as previous version - omitted for brevity but retained in logic)
-        # Using a condensed set for this file to ensure it fits, 
-        # but logic remains identical to previous turn.
-        
-        # UN M49 Definitions (Simplified for this snippet, full list assumed)
-        regions = {}
-        
-        # ... [Keep your full list of regions here] ...
-        # For brevity in this fix, I am re-injecting the standard ones + AL_MAGHRIB example
-        regions['AL_MAGHRIB'] = {'countries': ['DZ', 'LY', 'MA', 'MR', 'TN', 'EH']}
-        regions['EU_MEMBERS'] = {
-            'countries': ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'],
-            'description': 'European Union member states'
-        }
-        # ... Add other regions back ...
-        
-        self.region_map = regions
-        return regions
+        self.region_map = REGION_DEFINITIONS
+        return self.region_map
     
     def compile_geonames(self) -> str:
         self.countries = self.parse_country_info()
@@ -169,8 +148,56 @@ class GeoNamesCompiler:
         return "internal_memory"
 
     def export_rules_text(self, filename: str):
-        # ... (Same export logic) ...
-        pass
+        logger.info(f"📝 Exporting GeoIP rules reference to {filename}")
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write("=" * 90 + "\n")
+            f.write(" VIBE-DNS GEOIP RULE REFERENCE\n")
+            f.write("=" * 90 + "\n\n")
+            f.write("Use these tags in your blocklists or policy files.\n")
+            f.write("Format: @@TAG\n\n")
+            
+            # Continents
+            f.write("-" * 90 + "\n")
+            f.write(" CONTINENTS\n")
+            f.write("-" * 90 + "\n")
+            f.write(f"{'Code':<7}| {'Rule':<13}| {'Name':<30}\n")
+            f.write("-" * 90 + "\n")
+            
+            for code, info in sorted(CONTINENTS.items()):
+                f.write(f"{code:<7}| @@{code:<11}| {info['name']:<30}\n")
+                f.write(f"{'':7}| @@{info['name']:<11}| {info['name']} (Alias)\n")
+            
+            # Regions
+            f.write("\n" + "-" * 90 + "\n")
+            f.write(" REGIONS\n")
+            f.write("-" * 90 + "\n")
+            
+            for region_name in sorted(REGION_DEFINITIONS.keys()):
+                region_data = REGION_DEFINITIONS[region_name]
+                countries = region_data.get('countries', [])
+                desc = region_data.get('description', '')
+                
+                f.write(f"Region:      {region_name}\n")
+                f.write(f"Rule:        @@{region_name}\n")
+                if desc:
+                    f.write(f"Description: {desc}\n")
+                f.write(f"Countries:   {', '.join(sorted(countries))}\n")
+                f.write("-" * 40 + "\n")
+            
+            # Countries
+            f.write("\n" + "-" * 90 + "\n")
+            f.write(" COUNTRIES (ISO 3166-1 alpha-2)\n")
+            f.write("-" * 90 + "\n")
+            f.write(f"{'ISO':<7}| {'Rule':<13}| {'Continent':<11}| {'Name':<40}\n")
+            f.write("-" * 90 + "\n")
+            
+            for iso2, data in sorted(self.countries.items()):
+                cont = data.get('continent', 'XX')
+                name = data.get('name', 'Unknown')
+                f.write(f"{iso2:<7}| @@{iso2:<11}| {cont:<11}| {name:<40}\n")
+        
+        logger.info(f"✓ Rules reference exported to {filename}")
 
 # ============================================================================
 # PHASE 2: Unified Compiler
@@ -190,9 +217,8 @@ class UnifiedGeoIPCompiler:
         
         # Create map for continent codes to names
         self.continent_names = {
-            code: data['name'] 
-            for code, data in self.continent_map.items() 
-            if len(code) == 2
+            code: info['name'] 
+            for code, info in CONTINENTS.items()
         }
         
         self._region_cache = {}
@@ -212,11 +238,13 @@ class UnifiedGeoIPCompiler:
         last_log = time.time()
         with open(self.source_path, 'rb') as f:
             for line in f:
-                if not line: continue
+                if not line: 
+                    continue
                 try:
                     record = json.loads(line)
                     network = record.get('network')
-                    if not network: continue
+                    if not network: 
+                        continue
                     self.ip_ranges[network] = {
                         'country': record.get('country_code'),
                         'country_name': record.get('country'),
@@ -232,11 +260,14 @@ class UnifiedGeoIPCompiler:
                             sys.stdout.write(f"\r     Parsed {count:,} records...")
                             sys.stdout.flush()
                             last_log = now
-                except Exception: continue
+                except Exception: 
+                    continue
         sys.stdout.write(f"\r     Parsed {count:,} records... Done.\n")
 
     def _extract_mmdb(self):
         import maxminddb
+        import ipaddress
+        
         logger.info("  🔍 Extracting IP ranges from MMDB (Smart Traversal)...")
         if not self.source_path.exists():
             logger.error("File not found")
@@ -271,15 +302,15 @@ class UnifiedGeoIPCompiler:
 
     def _process_mmdb_record(self, cidr, data):
         country = None
-        if 'country' in data: country = data['country'].get('iso_code')
-        elif 'registered_country' in data: country = data['registered_country'].get('iso_code')
+        if 'country' in data: 
+            country = data['country'].get('iso_code')
+        elif 'registered_country' in data: 
+            country = data['registered_country'].get('iso_code')
         
-        # EXTRACT SUBDIVISION/REGION CODE
         region_code = None
         if 'subdivisions' in data and len(data['subdivisions']) > 0:
             region_code = data['subdivisions'][0].get('iso_code')
         
-        # EXTRACT CONTINENT
         continent = None
         if 'continent' in data:
             continent = data['continent'].get('code')
@@ -300,35 +331,42 @@ class UnifiedGeoIPCompiler:
             info.get('region'), 
             info.get('region_code')
         )
-        if key in self._region_cache: return self._region_cache[key]
+        if key in self._region_cache: 
+            return self._region_cache[key]
         
         regions = set()
         cc = info.get('country')
         reg_code = info.get('region_code')
 
         if cc:
-            # 1. Standard Tags
+            # Country code itself
             regions.add(cc.upper())
-            if cc in self.country_names: regions.add(self.country_names[cc].upper())
             
-            # 2. Continent Tags
-            for ccode, cdata in self.continent_map.items():
-                if cc in cdata.get('countries', []):
-                    regions.add(ccode.upper())
-                    if 'name' in cdata: regions.add(cdata['name'].upper())
+            # Country name
+            if cc in self.country_names: 
+                regions.add(self.country_names[cc].upper())
             
-            # 3. Custom Region Tags
-            for rname, rdata in self.region_map.items():
-                if 'countries' in rdata and cc in rdata['countries']: 
-                    regions.add(rname.upper())
-                if reg_code and 'subdivisions' in rdata and cc in rdata['subdivisions']:
-                     if reg_code in rdata['subdivisions'][cc]:
-                         regions.add(rname.upper())
+            # Continent tags
+            continent_code = get_country_continent(cc)
+            if continent_code:
+                regions.add(continent_code.upper())
+                continent_name = get_continent_name(continent_code)
+                if continent_name:
+                    regions.add(continent_name.upper())
+            
+            # Custom region tags
+            country_regions = get_country_regions(cc)
+            for region_name in country_regions:
+                regions.add(region_name.upper())
 
-        if info.get('city'): regions.add(info['city'].upper())
-        if info.get('region'): regions.add(info['region'].upper())
-        if info.get('region_code'): regions.add(info['region_code'].upper())
-        if info.get('continent'): regions.add(info['continent'].upper())
+        if info.get('city'): 
+            regions.add(info['city'].upper())
+        if info.get('region'): 
+            regions.add(info['region'].upper())
+        if info.get('region_code'): 
+            regions.add(info['region_code'].upper())
+        if info.get('continent'): 
+            regions.add(info['continent'].upper())
         
         result = list(regions)
         self._region_cache[key] = result
@@ -350,24 +388,24 @@ class UnifiedGeoIPCompiler:
                     last_log = now
             
             ver, start, end = parse_cidr_fast(cidr)
-            if ver == 0: continue
+            if ver == 0: 
+                continue
             
             regions = self._compute_regions_cached(info)
             
-            # --- FIX: Ensure fields match Resolver expectations ---
             cc = info.get('country')
             cont_code = info.get('continent')
 
             # Fallback to GeoNames for continent if missing in MMDB
-            if not cont_code and cc and cc in self.country_infos:
-                 cont_code = self.country_infos[cc]['continent']
+            if not cont_code and cc:
+                cont_code = get_country_continent(cc)
 
             cont_name = None
-            if cont_code and cont_code in self.continent_names:
-                 cont_name = self.continent_names[cont_code]
+            if cont_code:
+                cont_name = get_continent_name(cont_code)
             
             clean_info = {
-                'country_code': cc,  # Changed from 'country' to 'country_code'
+                'country_code': cc,
                 'country_name': info.get('country_name'),
                 'continent_code': cont_code,
                 'continent_name': cont_name,
@@ -377,8 +415,10 @@ class UnifiedGeoIPCompiler:
             # Remove None values
             clean_info = {k: v for k, v in clean_info.items() if v is not None}
             
-            if ver == 4: ipv4_list.append((start, end, clean_info))
-            elif ver == 6: ipv6_list.append((start, end, clean_info))
+            if ver == 4: 
+                ipv4_list.append((start, end, clean_info))
+            elif ver == 6: 
+                ipv6_list.append((start, end, clean_info))
         
         sys.stdout.write(f"\r     Processing record {count:,}/{len(self.ip_ranges):,}... Done.\n")
         logger.info("     Sorting IP ranges...")
@@ -393,7 +433,8 @@ class UnifiedGeoIPCompiler:
         def get_data_offset(info_dict):
             nonlocal current_data_offset
             json_bytes = json.dumps(info_dict)
-            if json_bytes in data_cache: return data_cache[json_bytes]
+            if json_bytes in data_cache: 
+                return data_cache[json_bytes]
             offset = current_data_offset
             data_cache[json_bytes] = offset
             data_buffer.extend(struct.pack('!H', len(json_bytes)))
@@ -439,8 +480,10 @@ def main():
     args = parser.parse_args()
     
     gc = GeoNamesCompiler()
-    if not args.skip_geonames: gc.compile_geonames()
-    else: gc.compile_geonames()
+    if not args.skip_geonames: 
+        gc.compile_geonames()
+    else: 
+        gc.compile_geonames()
     
     if args.export_rules:
         gc.export_rules_text(args.export_rules)
