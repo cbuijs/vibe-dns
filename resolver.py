@@ -2,12 +2,13 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.9.0 (GeoIP Block Response Fix)
+# Version: 6.9.1 (Strict CNAME Blocking)
 # -----------------------------------------------------------------------------
 """
 Core DNS Resolution & Processing Logic.
 Now supports GeoIP filtering on Queries (via ccTLD) and Answers.
 Fixed: GeoIP blocking now returns immediately without triggering CNAME collapse.
+Update: Enforces full blocking if all IPs are filtered from a response (e.g. CNAME tail blocking).
 """
 
 import asyncio
@@ -941,13 +942,20 @@ class DNSHandler:
                 section.clear()
                 section.extend(safe_rrsets)
 
-            # Check if filtering left us with an empty answer section
-            if not response.answer and matched_action:
+            # Check if filtering left us with no IP records (e.g. empty answer or just CNAMEs left)
+            # This prevents returning CNAME-only chains when the destination IP was blocked.
+            has_ips = False
+            for rrset in response.answer:
+                if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
+                    has_ips = True
+                    break
+            
+            if matched_action and not has_ips:
                 if matched_action == "DROP":
-                    req_logger.info(f"🔇 DROPPED | Reason: All IPs Filtered - Empty Response")
+                    req_logger.info(f"🔇 DROPPED | Reason: All IPs Filtered (No A/AAAA left)")
                     return None
                 elif matched_action == "BLOCK":
-                    req_logger.info(f"⛔ BLOCKED | Reason: All IPs Filtered - Empty Response")
+                    req_logger.info(f"⛔ BLOCKED | Reason: All IPs Filtered (No A/AAAA left)")
                     blocked_response = self.create_block_response(request, request.question[0].name, qtype)
                     self.cache.put_dns(blocked_response, qname_norm, qtype, group=group_key, scope=policy_name, req_logger=req_logger)
                     return blocked_response
