@@ -1,0 +1,52 @@
+# Core async HTTP client (required for DoH with HTTP/2)
+httpx>=0.28.1
+
+# DNS library
+dnspython>=2.8.0
+
+# Async HTTP (for backwards compatibility, not required)
+aiohttp>=3.13.2
+aiohappyeyeballs>=2.6.1
+aiosignal>=1.4.0
+multidict>=6.7.0
+propcache>=0.4.1
+yarl>=1.22.0
+frozenlist>=1.8.0
+
+# Network interface resolution
+netifaces>=0.11.0
+
+# Configuration
+PyYAML>=6.0.3
+
+# Regular expressions with extended features
+regex>=2025.11.3
+
+# SSL/TLS
+certifi>=2025.11.12
+cryptography>=46.0.3
+pyOpenSSL>=25.3.0
+cffi>=2.0.0
+pycparser>=2.23
+
+# HTTP/2 support
+h11>=0.16.0
+h2>=4.3.0
+hpack>=4.1.0
+httpcore>=1.0.9
+hyperframe>=6.1.0
+
+# General utilities
+anyio>=4.12.0
+attrs>=25.4.0
+idna>=3.11
+orjson>=3.11.5
+
+# ASN.1 (for SSL certificates)
+pyasn1>=0.6.1
+pyasn1_modules>=0.4.2
+service-identity>=24.2.0
+
+# GEO-IP
+maxminddb>=3.0.0
+intervaltree>=3.1.0

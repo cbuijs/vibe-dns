@@ -1,0 +1,306 @@
+{
+  "ads": {
+    "keywords": [
+      "2o7", "ad", "adclick", "adnetwork", "adsrvr", "adserver", "adservice",
+      "adsystem", "adtech", "advert", "advertising", "banner", "click", 
+      "doubleclick", "marketing", "popunder", "popup", "telemetry"
+    ],
+    "regex": [
+      "/(^|\\.)ad[s]?-[0-9a-z-]+\\./",
+      "/(^|\\.)banner[s]?-[0-9]+\\./",
+      "/(^|\\.)popup-[0-9]+\\./",
+      "/(^|\\.)telemetry-[a-z0-9]+\\./",
+      "/(^|\\.)pixel-[a-z0-9]+\\./",
+      "/(^|\\.)track(er|ing)?-[a-z0-9]+\\./"
+    ],
+    "tlds": [
+      "ad", "ads", "agency", "click", "deals", "design", "digital", "link", 
+      "marketing", "media", "promo", "sale", "studio"
+    ]
+  },
+  "bank_financial": {
+    "keywords": [
+      "abnamro", "adyen", "aegon", "allianz", "americanexpress", "amex", 
+      "axa", "bank", "bankofamerica", "barclays", "bitcoin", "blackrock", 
+      "bnpparibas", "bunq", "capital", "capitalone", "card", "cash", "cba", 
+      "cfa", "chase", "citi", "citigroup", "coin", "commbank", "cpa", 
+      "credit", "creditunion", "crypto", "deloitte", "deutschebank", 
+      "discover", "fidelity", "finance", "forex", "fund", "goldmansachs", 
+      "hsbc", "ing", "insurance", "insure", "intesa", "invest", "investments", 
+      "jpmorgan", "klarna", "kpmg", "loan", "loans", "market", "mastercard", 
+      "mollie", "money", "morganstanley", "mutual", "netbank", "nn", "pay", 
+      "payment", "paypal", "pwc", "rabobank", "revolut", "santander", "saxo", 
+      "schwab", "stock", "stripe", "trade", "trading", "ubs", "ventures", 
+      "visa", "wallet", "wealth", "wellsfargo", "wire", "wise", "wolterskluwer", 
+      "zurich"
+    ],
+    "regex": [
+      "/(^|\\.)bank-[a-z]+\\./",
+      "/(^|\\.)[a-z\\-]+bank./"
+    ],
+    "tlds": [
+      "abnamro", "allfinanz", "americanexpress", "amex", "axa", "bananarepublic", 
+      "bank", "barclaycard", "barclays", "bbva", "bnpparibas", "capital", 
+      "capitalone", "cash", "cba", "cfa", "chase", "citi", "commbank", "cpa", 
+      "credit", "creditunion", "deloitte", "discover", "finance", "fund", 
+      "hsbc", "insurance", "insure", "investments", "jpmorgan", "kpmg", 
+      "loan", "loans", "money", "mutual", "netbank", "pwc", "saxo", "trading", 
+      "ubs", "ventures", "visa", "wolterskluwer"
+    ]
+  },
+  "crypto": {
+    "keywords": [
+      "bitcoin", "blockchain", "btc", "coin", "crypto", "dao", "defi", 
+      "eth", "ether", "ethereum", "ledger", "mining", "nft", "token", 
+      "wallet", "web3"
+    ],
+    "regex": [
+      "/(^|\\.)crypto-[a-z]+\\./",
+      "/(^|\\.)wallet-connect-[0-9]+\\./",
+      "/(^|\\.)nft-mint-[0-9]+\\./"
+    ],
+    "tlds": ["crypto", "exchange", "nft", "xyz"]
+  },
+  "file_sharing": {
+    "keywords": [
+      "cloud", "crack", "download", "file", "host", "leech", "magnet", 
+      "mega", "mirror", "p2p", "seed", "share", "storage", "torrent", 
+      "transfer", "upload", "warez"
+    ],
+    "regex": [
+      "/(^|\\.)file-share-[0-9]+\\./",
+      "/(^|\\.)download-[a-z0-9]+\\./"
+    ],
+    "tlds": ["download", "file", "storage"]
+  },
+  "gambling": {
+    "keywords": [
+      "bet", "betting", "bingo", "blackjack", "bookie", "casino", "gaming", 
+      "jackpot", "lottery", "lotto", "odds", "poker", "roulette", "slots", 
+      "slot", "spin", "sportsbook", "vegas", "wager"
+    ],
+    "regex": [
+      "/(^|\\.)betting-[a-z]+\\./",
+      "/(^|\\.)casino-[0-9]+\\./",
+      "/(^|\\.)poker-[0-9a-z]+\\./",
+      "/(^|\\.)slot[s]?-[0-9]+\\./",
+      "/(^|\\.)win-big-[0-9]+\\./"
+    ],
+    "tlds": [
+      "bet", "bingo", "casino", "game", "games", "lotto", "play", "poker", 
+      "vegas", "win"
+    ]
+  },
+  "games": {
+    "keywords": [
+      "arcade", "console", "esports", "game", "gamer", "gaming", "guild", 
+      "minecraft", "multiplayer", "nintendo", "play", "playstation", "rpg", 
+      "steam", "xbox"
+    ],
+    "regex": [
+      "/(^|\\.)game(s)?-[0-9]+\\./",
+      "/(^|\\.)play-[a-z0-9]+\\./",
+      "/(^|\\.)server-minecraft-[0-9]+\\./"
+    ],
+    "tlds": ["game", "games", "play", "studio", "team"]
+  },
+  "government": {
+    "keywords": [
+      "administration", "agency", "authority", "bureau", "council", 
+      "department", "embassy", "federal", "gov", "govt", "ministry", 
+      "municipality", "parliament", "state"
+    ],
+    "regex": [
+      "/(^|\\.)gov-[a-z]+\\./",
+      "/(^|\\.)ministry-of-[a-z]+\\./"
+    ],
+    "tlds": [
+      "amsterdam", "eu", "gov", "int", "london", "mil", "nyc", "paris"
+    ]
+  },
+  "hacking_tools": {
+    "keywords": [
+      "admin", "botnet", "cpanel", "crack", "ddos", "exploit", "hack", 
+      "keygen", "pass", "password", "proxy", "root", "serial", "shell", "vpn"
+    ],
+    "regex": [
+      "/(^|\\.)hack-tool-[0-9]+\\./",
+      "/(^|\\.)exploit-kit-[a-z]+\\./",
+      "/(^|\\.)ddos-booter-[0-9]+\\./"
+    ],
+    "tlds": []
+  },
+  "illegal_drugs": {
+    "keywords": [
+      "alcohol", "beer", "cannabis", "cbd", "coca", "drug", "hemp", "heroin", 
+      "liquor", "marijuana", "med", "meth", "pharma", "pill", "rx", "smoke", 
+      "thc", "tobacco", "vape", "weed", "wine"
+    ],
+    "regex": [
+      "/(^|\\.)buy-weed-[a-z]+\\./",
+      "/(^|\\.)pharma-shop-[0-9]+\\./"
+    ],
+    "tlds": []
+  },
+  "malware": {
+    "keywords": [
+      "account", "backdoor", "billing", "bot", "c2", "command", "confirm", 
+      "control", "decrypt", "encrypt", "exploit", "hack", "key", "login", 
+      "mal", "payload", "phish", "ransom", "secure", "service", "spy", 
+      "support", "trojan", "update", "verify", "virus"
+    ],
+    "regex": [
+      "/(^|\\.)account-verify-[0-9]+\\./",
+      "/(^|\\.)login-[a-z]+-secure\\./",
+      "/(^|\\.)support-[0-9a-z]+\\./",
+      "/(^|\\.)update-[0-9]{3,}\\./",
+      "/(^|\\.)[a-z0-9]{15,}\\./" 
+    ],
+    "tlds": ["cf", "ga", "gq", "info", "ml", "mov", "pw", "tk", "top", "xyz", "zip"]
+  },
+  "phishing": {
+    "keywords": [
+      "account", "action", "alert", "auth", "billing", "confirm", "credential", 
+      "customer", "help", "info", "login", "notification", "password", 
+      "recover", "required", "secure", "security", "service", "signin", 
+      "support", "update", "verify", "wallet"
+    ],
+    "regex": [
+      "/(^|\\.)login-[a-z]+-secure\\./",
+      "/(^|\\.)account-verify-[0-9]+\\./",
+      "/(^|\\.)secure-update-[0-9]+\\./",
+      "/(^|\\.)verify-[a-z]+-account\\./",
+      "/(^|\\.)signin-[a-z]+\\./"
+    ],
+    "tlds": ["link", "click", "xyz", "site", "online", "top"]
+  },
+  "pornography": {
+    "keywords": [
+      "adult", "amateur", "cam", "clips", "dating", "erotic", "escort", 
+      "fetish", "hardcore", "hentai", "kink", "love", "mature", "model", 
+      "naked", "nude", "porn", "sex", "single", "softcore", "tube", "video", 
+      "xxx"
+    ],
+    "regex": [
+      "/(^|\\.)cam[s]?-[0-9]+\\./",
+      "/(^|\\.)sex-[a-z0-9]+\\./",
+      "/(^|\\.)tube[0-9]+\\./",
+      "/(^|\\.)xxx-[0-9]+\\./",
+      "/(^|\\.)porn-[a-z]+\\./"
+    ],
+    "tlds": [
+      "adult", "cam", "club", "fun", "gay", "hot", "lgbt", "live", "love", 
+      "porn", "sex", "sexy", "skin", "tube", "webcam", "xxx"
+    ]
+  },
+  "press_news": {
+    "keywords": [
+      "broadcast", "daily", "fakenews", "gazette", "herald", "journal", 
+      "media", "news", "post", "press", "radio", "report", "times", "tv", 
+      "weekly"
+    ],
+    "regex": [
+      "/(^|\\.)news-[a-z]+\\./",
+      "/(^|\\.)daily-[a-z]+\\./"
+    ],
+    "tlds": ["media", "news", "press"]
+  },
+  "privacy": {
+    "keywords": [
+      "anonym", "bypass", "cloak", "encrypt", "hide", "onion", "private-browse", 
+      "proxy", "secure-surf", "tor", "tunnel", "unblock", "vpn"
+    ],
+    "regex": [
+      "/(^|\\.)vpn-[a-z]+\\./",
+      "/(^|\\.)proxy-[0-9]+\\./",
+      "/(^|\\.)unblock-[a-z]+\\./"
+    ],
+    "tlds": []
+  },
+  "redirectors": {
+    "keywords": [
+      "bit", "click", "code", "deck", "feed", "go", "goo", "link", "out", 
+      "owl", "qr", "redir", "scan", "short", "tiny"
+    ],
+    "regex": [
+      "/(^|\\.)lnk-[0-9a-z]+\\./",
+      "/(^|\\.)url-[0-9]+\\./",
+      "/(^|\\.)redir(ect)?-[0-9]+\\./"
+    ],
+    "tlds": ["cf", "click", "gq", "link", "ml", "tk", "top", "xyz"]
+  },
+  "scam": {
+    "keywords": [
+      "award", "bonus", "cash", "claim", "deal", "discount", "free", "gift", 
+      "giveaway", "jackpot", "offer", "prize", "promo", "refund", "reward", 
+      "urgent", "winner", "win"
+    ],
+    "regex": [
+      "/(^|\\.)free-gift-[0-9]+\\./",
+      "/(^|\\.)claim-reward-[a-z]+\\./",
+      "/(^|\\.)winner-[0-9]+\\./",
+      "/(^|\\.)promo-code-[0-9]+\\./"
+    ],
+    "tlds": ["bargain", "cheap", "club", "coupons", "deals", "discount", "free", "gifts", "gratis", "loan", "money", "promo", "win"]
+  },
+  "social_media": {
+    "keywords": [
+      "book", "chat", "connect", "discord", "face", "friend", "gram", 
+      "insta", "linkedin", "meet", "messenger", "pinterest", "reddit", 
+      "snap", "social", "tele", "tiktok", "twitter", "whatsapp"
+    ],
+    "regex": [],
+    "tlds": []
+  },
+  "streaming_media": {
+    "keywords": [
+      "audio", "broadcast", "cinema", "film", "hulu", "live", "movie", 
+      "music", "netflix", "player", "radio", "sound", "stream", "tv", 
+      "twitch", "video", "view", "watch", "youtube"
+    ],
+    "regex": [
+      "/(^|\\.)stream-[0-9]+\\./",
+      "/(^|\\.)watch-[a-z0-9-]+\\./",
+      "/(^|\\.)movie-[a-z0-9]+\\./"
+    ],
+    "tlds": ["film", "movie", "stream", "tv", "video"]
+  },
+  "tracking": {
+    "keywords": [
+      "analytic", "analytics", "beacon", "click", "clickstream", "count", 
+      "counter", "fingerprint", "log", "logger", "metric", "metrics", 
+      "monitor", "pixel", "session", "stat", "stats", "track", "tracker"
+    ],
+    "regex": [
+      "/(^|\\.)analytics?-[a-z]+\\./",
+      "/(^|\\.)pixel-[a-z0-9]+\\./",
+      "/(^|\\.)telemetry-[0-9]+\\./",
+      "/(^|\\.)track(ing|er)?-[a-z]+\\./",
+      "/(^|\\.)stat[s]?-[0-9]+\\./"
+    ],
+    "tlds": []
+  },
+  "weapons": {
+    "keywords": [
+      "ammo", "armory", "bullet", "defense", "explosive", "firearm", "gun", 
+      "knife", "military", "pistol", "rifle", "tactical", "weapon"
+    ],
+    "regex": [
+      "/(^|\\.)gun-shop-[a-z]+\\./",
+      "/(^|\\.)ammo-store-[0-9]+\\./"
+    ],
+    "tlds": []
+  },
+  "webmail": {
+    "keywords": [
+      "email", "hotmail", "imap", "inbox", "login", "mail", "outlook", 
+      "pop", "signin", "smtp", "webmail"
+    ],
+    "regex": [
+      "/(^|\\.)webmail-[a-z0-9]+\\./",
+      "/(^|\\.)mail-[a-z]+\\./"
+    ],
+    "tlds": ["email", "mail"]
+  }
+}
+

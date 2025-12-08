@@ -1,0 +1,305 @@
+==========================================================================================
+ VIBE-DNS GEOIP RULE REFERENCE
+==========================================================================================
+
+Use these tags in your blocklists or policy files.
+Format: @@TAG
+
+------------------------------------------------------------------------------------------
+ CONTINENTS
+------------------------------------------------------------------------------------------
+Code   | Rule         | Name                     
+--------------------------------------------------
+AF     | @@AF         | AFRICA
+AN     | @@AN         | ANTARCTICA
+AS     | @@AS         | ASIA
+EU     | @@EU         | EUROPE
+NA     | @@NA         | NORTH_AMERICA
+OC     | @@OC         | OCEANIA
+SA     | @@SA         | SOUTH_AMERICA
+       | @@AFRICA     | AFRICA (Alias)
+       | @@ANTARCTICA | ANTARCTICA (Alias)
+       | @@ASIA       | ASIA (Alias)
+       | @@EUROPE     | EUROPE (Alias)
+       | @@NORTH_AMERICA | NORTH_AMERICA (Alias)
+       | @@OCEANIA    | OCEANIA (Alias)
+       | @@SOUTH_AMERICA | SOUTH_AMERICA (Alias)
+
+------------------------------------------------------------------------------------------
+ REGIONS
+------------------------------------------------------------------------------------------
+Region:      AL_MAGHRIB
+Rule:        @@AL_MAGHRIB
+Countries:   DZ, EH, LY, MA, MR, TN
+----------------------------------------
+Region:      BRICS
+Rule:        @@BRICS
+Countries:   AE, BR, CN, EG, ET, IN, IR, RU, ZA
+----------------------------------------
+Region:      EU_MEMBERS
+Rule:        @@EU_MEMBERS
+Description: European Union member states
+Countries:   AT, BE, BG, CY, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK
+----------------------------------------
+Region:      UK
+Rule:        @@UK
+Countries:   GB
+----------------------------------------
+
+------------------------------------------------------------------------------------------
+ COUNTRIES (ISO 3166-1 alpha-2)
+------------------------------------------------------------------------------------------
+ISO    | Rule         | Continent  | Name
+------------------------------------------------------------
+AD     | @@AD         | EU         | Andorra
+AE     | @@AE         | AS         | United Arab Emirates
+AF     | @@AF         | AS         | Afghanistan
+AG     | @@AG         | NA         | Antigua and Barbuda
+AI     | @@AI         | NA         | Anguilla
+AL     | @@AL         | EU         | Albania
+AM     | @@AM         | AS         | Armenia
+AN     | @@AN         | NA         | Netherlands Antilles
+AO     | @@AO         | AF         | Angola
+AQ     | @@AQ         | AN         | Antarctica
+AR     | @@AR         | SA         | Argentina
+AS     | @@AS         | OC         | American Samoa
+AT     | @@AT         | EU         | Austria
+AU     | @@AU         | OC         | Australia
+AW     | @@AW         | NA         | Aruba
+AX     | @@AX         | EU         | Aland Islands
+AZ     | @@AZ         | AS         | Azerbaijan
+BA     | @@BA         | EU         | Bosnia and Herzegovina
+BB     | @@BB         | NA         | Barbados
+BD     | @@BD         | AS         | Bangladesh
+BE     | @@BE         | EU         | Belgium
+BF     | @@BF         | AF         | Burkina Faso
+BG     | @@BG         | EU         | Bulgaria
+BH     | @@BH         | AS         | Bahrain
+BI     | @@BI         | AF         | Burundi
+BJ     | @@BJ         | AF         | Benin
+BL     | @@BL         | NA         | Saint Barthelemy
+BM     | @@BM         | NA         | Bermuda
+BN     | @@BN         | AS         | Brunei
+BO     | @@BO         | SA         | Bolivia
+BQ     | @@BQ         | NA         | Bonaire, Saint Eustatius and Saba 
+BR     | @@BR         | SA         | Brazil
+BS     | @@BS         | NA         | Bahamas
+BT     | @@BT         | AS         | Bhutan
+BV     | @@BV         | AN         | Bouvet Island
+BW     | @@BW         | AF         | Botswana
+BY     | @@BY         | EU         | Belarus
+BZ     | @@BZ         | NA         | Belize
+CA     | @@CA         | NA         | Canada
+CC     | @@CC         | AS         | Cocos Islands
+CD     | @@CD         | AF         | Democratic Republic of the Congo
+CF     | @@CF         | AF         | Central African Republic
+CG     | @@CG         | AF         | Republic of the Congo
+CH     | @@CH         | EU         | Switzerland
+CI     | @@CI         | AF         | Ivory Coast
+CK     | @@CK         | OC         | Cook Islands
+CL     | @@CL         | SA         | Chile
+CM     | @@CM         | AF         | Cameroon
+CN     | @@CN         | AS         | China
+CO     | @@CO         | SA         | Colombia
+CR     | @@CR         | NA         | Costa Rica
+CS     | @@CS         | EU         | Serbia and Montenegro
+CU     | @@CU         | NA         | Cuba
+CV     | @@CV         | AF         | Cabo Verde
+CW     | @@CW         | NA         | Curacao
+CX     | @@CX         | OC         | Christmas Island
+CY     | @@CY         | EU         | Cyprus
+CZ     | @@CZ         | EU         | Czechia
+DE     | @@DE         | EU         | Germany
+DJ     | @@DJ         | AF         | Djibouti
+DK     | @@DK         | EU         | Denmark
+DM     | @@DM         | NA         | Dominica
+DO     | @@DO         | NA         | Dominican Republic
+DZ     | @@DZ         | AF         | Algeria
+EC     | @@EC         | SA         | Ecuador
+EE     | @@EE         | EU         | Estonia
+EG     | @@EG         | AF         | Egypt
+EH     | @@EH         | AF         | Western Sahara
+ER     | @@ER         | AF         | Eritrea
+ES     | @@ES         | EU         | Spain
+ET     | @@ET         | AF         | Ethiopia
+FI     | @@FI         | EU         | Finland
+FJ     | @@FJ         | OC         | Fiji
+FK     | @@FK         | SA         | Falkland Islands
+FM     | @@FM         | OC         | Micronesia
+FO     | @@FO         | EU         | Faroe Islands
+FR     | @@FR         | EU         | France
+GA     | @@GA         | AF         | Gabon
+GB     | @@GB         | EU         | United Kingdom
+GD     | @@GD         | NA         | Grenada
+GE     | @@GE         | AS         | Georgia
+GF     | @@GF         | SA         | French Guiana
+GG     | @@GG         | EU         | Guernsey
+GH     | @@GH         | AF         | Ghana
+GI     | @@GI         | EU         | Gibraltar
+GL     | @@GL         | NA         | Greenland
+GM     | @@GM         | AF         | Gambia
+GN     | @@GN         | AF         | Guinea
+GP     | @@GP         | NA         | Guadeloupe
+GQ     | @@GQ         | AF         | Equatorial Guinea
+GR     | @@GR         | EU         | Greece
+GS     | @@GS         | AN         | South Georgia and the South Sandwich Islands
+GT     | @@GT         | NA         | Guatemala
+GU     | @@GU         | OC         | Guam
+GW     | @@GW         | AF         | Guinea-Bissau
+GY     | @@GY         | SA         | Guyana
+HK     | @@HK         | AS         | Hong Kong
+HM     | @@HM         | AN         | Heard Island and McDonald Islands
+HN     | @@HN         | NA         | Honduras
+HR     | @@HR         | EU         | Croatia
+HT     | @@HT         | NA         | Haiti
+HU     | @@HU         | EU         | Hungary
+ID     | @@ID         | AS         | Indonesia
+IE     | @@IE         | EU         | Ireland
+IL     | @@IL         | AS         | Israel
+IM     | @@IM         | EU         | Isle of Man
+IN     | @@IN         | AS         | India
+IO     | @@IO         | AS         | British Indian Ocean Territory
+IQ     | @@IQ         | AS         | Iraq
+IR     | @@IR         | AS         | Iran
+IS     | @@IS         | EU         | Iceland
+IT     | @@IT         | EU         | Italy
+JE     | @@JE         | EU         | Jersey
+JM     | @@JM         | NA         | Jamaica
+JO     | @@JO         | AS         | Jordan
+JP     | @@JP         | AS         | Japan
+KE     | @@KE         | AF         | Kenya
+KG     | @@KG         | AS         | Kyrgyzstan
+KH     | @@KH         | AS         | Cambodia
+KI     | @@KI         | OC         | Kiribati
+KM     | @@KM         | AF         | Comoros
+KN     | @@KN         | NA         | Saint Kitts and Nevis
+KP     | @@KP         | AS         | North Korea
+KR     | @@KR         | AS         | South Korea
+KW     | @@KW         | AS         | Kuwait
+KY     | @@KY         | NA         | Cayman Islands
+KZ     | @@KZ         | AS         | Kazakhstan
+LA     | @@LA         | AS         | Laos
+LB     | @@LB         | AS         | Lebanon
+LC     | @@LC         | NA         | Saint Lucia
+LI     | @@LI         | EU         | Liechtenstein
+LK     | @@LK         | AS         | Sri Lanka
+LR     | @@LR         | AF         | Liberia
+LS     | @@LS         | AF         | Lesotho
+LT     | @@LT         | EU         | Lithuania
+LU     | @@LU         | EU         | Luxembourg
+LV     | @@LV         | EU         | Latvia
+LY     | @@LY         | AF         | Libya
+MA     | @@MA         | AF         | Morocco
+MC     | @@MC         | EU         | Monaco
+MD     | @@MD         | EU         | Moldova
+ME     | @@ME         | EU         | Montenegro
+MF     | @@MF         | NA         | Saint Martin
+MG     | @@MG         | AF         | Madagascar
+MH     | @@MH         | OC         | Marshall Islands
+MK     | @@MK         | EU         | North Macedonia
+ML     | @@ML         | AF         | Mali
+MM     | @@MM         | AS         | Myanmar
+MN     | @@MN         | AS         | Mongolia
+MO     | @@MO         | AS         | Macao
+MP     | @@MP         | OC         | Northern Mariana Islands
+MQ     | @@MQ         | NA         | Martinique
+MR     | @@MR         | AF         | Mauritania
+MS     | @@MS         | NA         | Montserrat
+MT     | @@MT         | EU         | Malta
+MU     | @@MU         | AF         | Mauritius
+MV     | @@MV         | AS         | Maldives
+MW     | @@MW         | AF         | Malawi
+MX     | @@MX         | NA         | Mexico
+MY     | @@MY         | AS         | Malaysia
+MZ     | @@MZ         | AF         | Mozambique
+NA     | @@NA         | AF         | Namibia
+NC     | @@NC         | OC         | New Caledonia
+NE     | @@NE         | AF         | Niger
+NF     | @@NF         | OC         | Norfolk Island
+NG     | @@NG         | AF         | Nigeria
+NI     | @@NI         | NA         | Nicaragua
+NL     | @@NL         | EU         | The Netherlands
+NO     | @@NO         | EU         | Norway
+NP     | @@NP         | AS         | Nepal
+NR     | @@NR         | OC         | Nauru
+NU     | @@NU         | OC         | Niue
+NZ     | @@NZ         | OC         | New Zealand
+OM     | @@OM         | AS         | Oman
+PA     | @@PA         | NA         | Panama
+PE     | @@PE         | SA         | Peru
+PF     | @@PF         | OC         | French Polynesia
+PG     | @@PG         | OC         | Papua New Guinea
+PH     | @@PH         | AS         | Philippines
+PK     | @@PK         | AS         | Pakistan
+PL     | @@PL         | EU         | Poland
+PM     | @@PM         | NA         | Saint Pierre and Miquelon
+PN     | @@PN         | OC         | Pitcairn
+PR     | @@PR         | NA         | Puerto Rico
+PS     | @@PS         | AS         | Palestinian Territory
+PT     | @@PT         | EU         | Portugal
+PW     | @@PW         | OC         | Palau
+PY     | @@PY         | SA         | Paraguay
+QA     | @@QA         | AS         | Qatar
+RE     | @@RE         | AF         | Reunion
+RO     | @@RO         | EU         | Romania
+RS     | @@RS         | EU         | Serbia
+RU     | @@RU         | EU         | Russia
+RW     | @@RW         | AF         | Rwanda
+SA     | @@SA         | AS         | Saudi Arabia
+SB     | @@SB         | OC         | Solomon Islands
+SC     | @@SC         | AF         | Seychelles
+SD     | @@SD         | AF         | Sudan
+SE     | @@SE         | EU         | Sweden
+SG     | @@SG         | AS         | Singapore
+SH     | @@SH         | AF         | Saint Helena
+SI     | @@SI         | EU         | Slovenia
+SJ     | @@SJ         | EU         | Svalbard and Jan Mayen
+SK     | @@SK         | EU         | Slovakia
+SL     | @@SL         | AF         | Sierra Leone
+SM     | @@SM         | EU         | San Marino
+SN     | @@SN         | AF         | Senegal
+SO     | @@SO         | AF         | Somalia
+SR     | @@SR         | SA         | Suriname
+SS     | @@SS         | AF         | South Sudan
+ST     | @@ST         | AF         | Sao Tome and Principe
+SV     | @@SV         | NA         | El Salvador
+SX     | @@SX         | NA         | Sint Maarten
+SY     | @@SY         | AS         | Syria
+SZ     | @@SZ         | AF         | Eswatini
+TC     | @@TC         | NA         | Turks and Caicos Islands
+TD     | @@TD         | AF         | Chad
+TF     | @@TF         | AN         | French Southern Territories
+TG     | @@TG         | AF         | Togo
+TH     | @@TH         | AS         | Thailand
+TJ     | @@TJ         | AS         | Tajikistan
+TK     | @@TK         | OC         | Tokelau
+TL     | @@TL         | OC         | Timor Leste
+TM     | @@TM         | AS         | Turkmenistan
+TN     | @@TN         | AF         | Tunisia
+TO     | @@TO         | OC         | Tonga
+TR     | @@TR         | AS         | Turkey
+TT     | @@TT         | NA         | Trinidad and Tobago
+TV     | @@TV         | OC         | Tuvalu
+TW     | @@TW         | AS         | Taiwan
+TZ     | @@TZ         | AF         | Tanzania
+UA     | @@UA         | EU         | Ukraine
+UG     | @@UG         | AF         | Uganda
+UM     | @@UM         | OC         | United States Minor Outlying Islands
+US     | @@US         | NA         | United States
+UY     | @@UY         | SA         | Uruguay
+UZ     | @@UZ         | AS         | Uzbekistan
+VA     | @@VA         | EU         | Vatican
+VC     | @@VC         | NA         | Saint Vincent and the Grenadines
+VE     | @@VE         | SA         | Venezuela
+VG     | @@VG         | NA         | British Virgin Islands
+VI     | @@VI         | NA         | U.S. Virgin Islands
+VN     | @@VN         | AS         | Vietnam
+VU     | @@VU         | OC         | Vanuatu
+WF     | @@WF         | OC         | Wallis and Futuna
+WS     | @@WS         | OC         | Samoa
+XK     | @@XK         | EU         | Kosovo
+YE     | @@YE         | AS         | Yemen
+YT     | @@YT         | AF         | Mayotte
+ZA     | @@ZA         | AF         | South Africa
+ZM     | @@ZM         | AF         | Zambia
+ZW     | @@ZW         | AF         | Zimbabwe
