@@ -8,18 +8,24 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build for ${{ matrix.platform_name }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
+          # --- Linux (Generic AMD64) ---
           - os: ubuntu-latest
             platform_name: linux-amd64
             executable_ext: ""
+
+          # --- Windows (AMD64) ---
           - os: windows-latest
             platform_name: windows-amd64
             executable_ext: ".exe"
-          - os: macos-14  # Uses Apple Silicon (M1) runners
+
+          # --- macOS (Apple Silicon) ---
+          - os: macos-14
             platform_name: macos-arm64
             executable_ext: ""
 
@@ -29,11 +35,12 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12' # Recommended over 3.14 for compatibility
+        python-version: '3.12'
         cache: 'pip'
 
     - name: Install Dependencies
       run: |
+        pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
 
@@ -45,20 +52,24 @@ jobs:
       run: |
         pyinstaller --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
 
-    - name: Prepare Artifacts
+    - name: Organize Executables
       shell: bash
       run: |
-        mkdir release
-        mv dist/vibe-dns-server${{ matrix.executable_ext }} release/
-        mv dist/geoip-compiler${{ matrix.executable_ext }} release/
-        # Copy config files so the user has them next to the binary
-        cp full_config.yaml release/config.yaml
-        cp categories.json release/
-        cp geoip.txt release/
+        # Create the target directory
+        mkdir -p executables
 
-    - name: Upload Artifacts
+        # Move the compiled binaries from dist/ to executables/
+        mv dist/vibe-dns-server${{ matrix.executable_ext }} executables/
+        mv dist/geoip-compiler${{ matrix.executable_ext }} executables/
+        
+        # Copy configuration files so they are ready to use
+        cp full_config.yaml executables/config.yaml
+        cp categories.json executables/
+        cp geoip.txt executables/
+
+    - name: Upload Executables
       uses: actions/upload-artifact@v4
       with:
         name: vibe-dns-${{ matrix.platform_name }}
-        path: release/
+        path: executables/
 
