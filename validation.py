@@ -2,10 +2,10 @@
 # filename: validation.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.0
+# Version: 2.0.0 (Optimized - Removed Single-Use Functions)
 # -----------------------------------------------------------------------------
 """
-Validation utilities - consolidated from multiple modules.
+Validation utilities - consolidated and optimized.
 """
 
 import ipaddress
@@ -88,74 +88,4 @@ def is_valid_domain(domain: str, allow_underscores: bool = False) -> bool:
                 return False
     
     return True
-
-
-def is_valid_port(port: int) -> bool:
-    """
-    Validate port number.
-    
-    Args:
-        port: Port number
-        
-    Returns:
-        True if valid port (1-65535)
-    """
-    return isinstance(port, int) and 1 <= port <= 65535
-
-
-def is_valid_mac(mac_str: str) -> bool:
-    """
-    Validate MAC address format.
-    
-    Args:
-        mac_str: MAC address string (XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX)
-        
-    Returns:
-        True if valid MAC address
-    """
-    import re
-    pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
-    return bool(pattern.match(mac_str))
-
-
-def extract_ip_from_string(s: str) -> str:
-    """
-    Extract IP address from various formats.
-    
-    Handles:
-    - 8.8.8.8
-    - 8.8.8.8:53
-    - [2001:db8::1]
-    - [2001:db8::1]:53
-    - udp://8.8.8.8:53
-    - udp://[2001:db8::1]:53
-    
-    Args:
-        s: String containing IP address
-        
-    Returns:
-        Extracted IP address
-    """
-    # Remove protocol if present
-    if '://' in s:
-        s = s.split('://', 1)[1]
-    
-    # Handle [IPv6]:port format
-    if s.startswith('['):
-        bracket_end = s.find(']')
-        if bracket_end > 0:
-            return s[1:bracket_end]
-        return s[1:]  # Malformed but try anyway
-    
-    # Handle IPv4:port or bare IPv4
-    if '.' in s:
-        return s.split(':')[0]
-    
-    # Bare IPv6 (might have port at the end)
-    # IPv6 has multiple colons, port has one
-    if s.count(':') > 1:
-        return s  # Likely bare IPv6
-    
-    # Fallback: take everything before last colon (port)
-    return s.rsplit(':', 1)[0]
 

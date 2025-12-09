@@ -2,13 +2,13 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 7.0.0 (Consolidated Action Handling)
+# Version: 8.0.0 (Optimized - Hard IntervalTree Requirement)
 # -----------------------------------------------------------------------------
 """
-Filtering Engine with consolidated action handling.
-All actions (ALLOW/BLOCK/DROP) use unified data structures.
+Filtering Engine with consolidated action handling and optimizations.
 """
 
+import sys
 import regex
 import ipaddress
 import orjson as json
@@ -17,17 +17,12 @@ from collections import defaultdict
 from utils import get_logger
 from validation import is_valid_domain
 
-# Try importing IntervalTree, warn if missing
+# Hard requirement for IntervalTree
 try:
     from intervaltree import IntervalTree
 except ImportError:
-    print("WARNING: 'intervaltree' module not found. Please install via 'pip install intervaltree'.")
-    class IntervalTree:
-        def __init__(self): self.tree = set()
-        def __len__(self): return 0
-        def overlaps(self, start, end): return False
-        def add(self, start, end, data): pass
-        def __getitem__(self, point): return set()
+    print("FATAL: 'intervaltree' module required. Install: pip install intervaltree")
+    sys.exit(1)
 
 logger = get_logger("Filtering")
 
@@ -301,23 +296,6 @@ class RuleEngine:
         target['domain'].insert(clean_normalized, action=action, rule_data=rule_text, list_name=list_name)
         return "domain"
 
-    def _expand_geoip_locations(self, country_code, geoip_lookup):
-        """Build set of applicable location tags from country code"""
-        locations = set()
-        locations.add(country_code.upper())
-        
-        # Add continent
-        cont = geoip_lookup.cctld_mapper.get_continent_from_country(country_code)
-        if cont:
-            locations.add(cont.upper())
-        
-        # Add regions
-        regs = geoip_lookup.cctld_mapper.get_regions_from_country(country_code)
-        for r in regs:
-            locations.add(r.upper())
-        
-        return locations
-
     def is_blocked(self, qname_norm: str, geoip_lookup=None):
         """
         Check if query is blocked.
@@ -359,7 +337,8 @@ class RuleEngine:
             if cctld_country:
                 logger.debug(f"  ✓ ccTLD Detected: .{qname_norm.split('.')[-1]} → Country: {cctld_country}")
                 
-                locations = self._expand_geoip_locations(cctld_country, geoip_lookup)
+                # Use cached expansion
+                locations = geoip_lookup.cctld_mapper.expand_locations(cctld_country)
                 logger.debug(f"  → Checking against {len(locations)} location tags: {', '.join(sorted(locations))}")
                 
                 # Check DROP first, then BLOCK
@@ -491,11 +470,11 @@ class RuleEngine:
             'allow_domains': len(self.query_rules['domain'].root),
             'block_domains': len(self.query_rules['domain'].root),
             'drop_domains': len(self.query_rules['domain'].root),
-            'query_block_geoip': query_block_geo,
-            'query_drop_geoip': query_drop_geo,
-            'answer_block_geoip': answer_block_geo,
-            'answer_drop_geoip': answer_drop_geo,
-            'answer_block_ips': len(self.answer_rules['ip']),
-            'answer_drop_ips': len(self.answer_rules['ip']),
+            'query_block_geo': query_block_geo,
+            'query_drop_geo': query_drop_geo,
+            'answer_block_geo': answer_block_geo,
+            'answer_drop_geo': answer_drop_geo,
+            'answer_ips': len(self.answer_rules['ip']),
         }
+
 

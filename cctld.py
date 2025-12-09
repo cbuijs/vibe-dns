@@ -2,14 +2,13 @@
 # filename: cctld.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.4.0 (Unified Region Definitions)
+# Version: 2.0.0 (Optimized - Cached Location Expansion)
 # -----------------------------------------------------------------------------
 """
-CCTLD (Country Code Top-Level Domain) mapping for geographic hints.
-Includes Continent and Region mapping for query-based blocking.
+CCTLD mapping with optimized location expansion.
 """
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Set
 from utils import get_logger
 
 from geo_regions import (
@@ -73,26 +72,16 @@ for cctld, country in CCTLD_TO_COUNTRY.items():
     COUNTRY_TO_CCTLD[country].append(cctld)
 
 class CCTLDMapper:
-    """Maps domain names to country codes via CCTLD"""
+    """Maps domain names to country codes via CCTLD with optimized expansion"""
     
     def __init__(self, enabled: bool = False):
         self.enabled = enabled
-        self.country_to_regions = {}
+        self._expansion_cache = {}  # Country → Set[locations]
         
         if self.enabled:
-            self._invert_regions()
             logger.info(f"CCTLD Mapper initialized: {len(CCTLD_TO_COUNTRY)} TLDs mapped")
         else:
             logger.debug("CCTLD Mapper initialized (disabled)")
-
-    def _invert_regions(self):
-        """Pre-compute Country -> [Regions] map for fast lookup"""
-        for region, region_data in REGION_DEFINITIONS.items():
-            countries = region_data.get('countries', [])
-            for country in countries:
-                if country not in self.country_to_regions:
-                    self.country_to_regions[country] = []
-                self.country_to_regions[country].append(region)
 
     def get_country_from_domain(self, domain: str) -> Optional[str]:
         """Extract country code from domain's CCTLD"""
@@ -108,9 +97,7 @@ class CCTLDMapper:
             return None
         
         tld = parts[-1]
-        country = CCTLD_TO_COUNTRY.get(tld)
-        
-        return country
+        return CCTLD_TO_COUNTRY.get(tld)
     
     def get_cctlds_for_country(self, country_code: str) -> list:
         """Get all CCTLDs for a country code"""
@@ -125,4 +112,40 @@ class CCTLDMapper:
         if not country_code: 
             return []
         return get_country_regions(country_code)
+    
+    def expand_locations(self, country_code: str) -> Set[str]:
+        """
+        Get all location tags for country (cached for performance).
+        
+        Returns set containing:
+        - Country code (e.g., 'NL')
+        - Continent code (e.g., 'EU')
+        - All regional tags (e.g., 'BENELUX', 'WESTERN_EUROPE')
+        
+        Args:
+            country_code: ISO 3166-1 alpha-2 country code
+            
+        Returns:
+            Set of uppercase location tags
+        """
+        cc = country_code.upper()
+        
+        # Return cached result if available
+        if cc in self._expansion_cache:
+            return self._expansion_cache[cc]
+        
+        locations = {cc}
+        
+        # Add continent
+        cont = self.get_continent_from_country(cc)
+        if cont:
+            locations.add(cont.upper())
+        
+        # Add regions
+        for r in self.get_regions_from_country(cc):
+            locations.add(r.upper())
+        
+        # Cache result
+        self._expansion_cache[cc] = locations
+        return locations
 

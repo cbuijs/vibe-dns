@@ -2,13 +2,10 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.9.1 (Strict CNAME Blocking)
+# Version: 7.0.0 (Optimized - Consolidated Methods)
 # -----------------------------------------------------------------------------
 """
-Core DNS Resolution & Processing Logic.
-Now supports GeoIP filtering on Queries (via ccTLD) and Answers.
-Fixed: GeoIP blocking now returns immediately without triggering CNAME collapse.
-Update: Enforces full blocking if all IPs are filtered from a response (e.g. CNAME tail blocking).
+Core DNS Resolution with consolidated EDNS processing and optimizations.
 """
 
 import asyncio
@@ -108,24 +105,18 @@ class RequestDeduplicator:
             if key in self.pending: del self.pending[key]
 
 class DecisionCache(LRUCache):
-    """Cache filtering decisions with optimized key strategy"""
+    """Cache filtering decisions"""
     def __init__(self, size=50000, ttl=300):
         super().__init__(max_size=size, default_ttl=ttl)
         logger.info(f"Decision Cache initialized: size={size}, TTL={ttl}s")
     
     def get_decision(self, qname_norm: str, qtype: int, group: str, policy: str) -> Optional[dict]:
         key = (qname_norm, qtype, group, policy)
-        result = self.get(key)
-        if result: return result
-        key_global = (qname_norm, qtype, policy)
-        return self.get(key_global)
+        return self.get(key)
     
     def put_decision(self, qname_norm: str, qtype: int, group: str, policy: str, decision: dict):
         key = (qname_norm, qtype, group, policy)
         self.put(key, decision)
-        if 'group' not in decision.get('reason', ''):
-            key_global = (qname_norm, qtype, policy)
-            self.put(key_global, decision)
 
 class DNSCache(LRUCache):
     """In-memory DNS cache using shared LRU infrastructure"""
@@ -274,13 +265,57 @@ class DNSHandler:
                 self.group_mac_map[ident_lower] = gname
         logger.info(f"Client Lookup Maps Built: IPs={len(self.group_ip_map)}, MACs={len(self.group_mac_map)}, CIDRs={len(self.group_cidr_list)}, GeoIPs={len(self.group_geoip_list)}")
 
+    def _process_edns_options(self, message, keep_ecs=True, keep_mac=True):
+        """
+        Centralized EDNS option filtering.
+        
+        Args:
+            message: DNS message to process
+            keep_ecs: Whether to keep ECS options
+            keep_mac: Whether to keep MAC options
+            
+        Returns:
+            List of filtered options
+        """
+        if message.edns < 0:
+            return []
+        
+        allowed_codes = {8, 10, 65001}
+        filtered = []
+        
+        for opt in message.options:
+            if isinstance(opt, dns.edns.ECSOption):
+                if keep_ecs:
+                    filtered.append(opt)
+            elif isinstance(opt, dns.edns.GenericOption):
+                if opt.otype == 65001:
+                    if keep_mac:
+                        filtered.append(opt)
+                elif opt.otype in allowed_codes:
+                    filtered.append(opt)
+            elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
+                filtered.append(opt)
+        
+        return filtered
+    
+    def _apply_edns_options(self, message, options):
+        """Apply filtered EDNS options to message"""
+        if message.edns >= 0 or options:
+            edns_ver = message.edns if message.edns >= 0 else 0
+            payload = message.payload if message.payload >= 512 else 1232
+            message.use_edns(edns=edns_ver, ednsflags=message.ednsflags, options=options, payload=payload)
+
+    def _make_cache_key(self, qname_norm, qtype, group, policy):
+        """Create cache key tuple"""
+        return (qname_norm, qtype, group, policy)
+
     def _extract_ip_from_ptr(self, qname_str: str) -> Optional[str]:
         """Extract IP address from PTR query name."""
         qname_lower = qname_str.lower().rstrip('.')
         
         # IPv4: 4.3.2.1.in-addr.arpa -> 1.2.3.4
         if qname_lower.endswith('.in-addr.arpa'):
-            base = qname_lower[:-13] # remove .in-addr.arpa
+            base = qname_lower[:-13]
             parts = base.split('.')
             if len(parts) == 4:
                 try:
@@ -291,7 +326,7 @@ class DNSHandler:
                 
         # IPv6: b.a.9.8....ip6.arpa -> 2001:db8:...
         elif qname_lower.endswith('.ip6.arpa'):
-            base = qname_lower[:-9] # remove .ip6.arpa
+            base = qname_lower[:-9]
             parts = base.split('.')
             if len(parts) == 32:
                 try:
@@ -412,7 +447,6 @@ class DNSHandler:
             return
         qname = response.question[0].name
         
-        # Identify CNAMEs and Other records
         cname_rrsets = []
         other_rrsets = []
         
@@ -448,28 +482,19 @@ class DNSHandler:
         
         final_target = current
         
-        # Reconstruct answer section without CNAMEs
         new_answer = []
         
         for rrset in other_rrsets:
-            # We only keep non-CNAME records.
-            # If a record matches the final target of the chain, we re-home it to QNAME.
             if rrset.name == final_target:
                 new_rrset = dns.rrset.RRset(qname, rrset.rdclass, rrset.rdtype)
                 new_rrset.ttl = rrset.ttl
                 for rdata in rrset:
                     new_rrset.add(rdata)
                 new_answer.append(new_rrset)
-            else:
-                # Discard unrelated records in the answer section to ensure clean collapse
-                # (Unless strictly necessary, but standard collapse implies hiding the chain)
-                pass
         
-        # Apply changes
         response.answer.clear()
         response.answer.extend(new_answer)
         
-        # Handle Empty Result
         if not response.answer:
             empty_rcode_str = response_cfg.get('cname_empty_rcode', 'NXDOMAIN').upper()
             req_logger.debug(f"CNAME Collapse resulted in empty answer. Applying {empty_rcode_str}.")
@@ -489,29 +514,41 @@ class DNSHandler:
                 response.additional.clear()
 
     def modify_ttls(self, response: dns.message.Message, req_logger):
+        """Optimized TTL modification - processes all sections once"""
         response_cfg = self.config.get('response') or {}
         min_ttl = response_cfg.get('min_ttl', 0)
         max_ttl = response_cfg.get('max_ttl', 86400)
         sync_mode = response_cfg.get('ttl_sync_mode', 'none').lower()
         
+        # Collect all rrsets
+        all_rrsets = list(response.answer) + list(response.authority) + list(response.additional)
+        
+        if not all_rrsets:
+            return
+        
+        # Calculate sync TTL if needed
         target_ttl = None
         if sync_mode != 'none' and response.answer:
-            ttls = [rrset.ttl for rrset in response.answer]
-            if ttls:
-                if sync_mode == 'first': target_ttl = ttls[0]
-                elif sync_mode == 'last': target_ttl = ttls[-1]
-                elif sync_mode == 'highest': target_ttl = max(ttls)
-                elif sync_mode == 'lowest': target_ttl = min(ttls)
-                elif sync_mode == 'average': target_ttl = int(sum(ttls) / len(ttls))
-                req_logger.debug(f"TTL Sync ({sync_mode}): Input={ttls} -> Target={target_ttl}s")
-
-        for section_name, section in [('Answer', response.answer), ('Auth', response.authority), ('Addl', response.additional)]:
-            for rrset in section:
-                if target_ttl is not None and section_name == 'Answer':
-                    rrset.ttl = int(target_ttl)
-                
-                if rrset.ttl < min_ttl: rrset.ttl = int(min_ttl)
-                elif rrset.ttl > max_ttl: rrset.ttl = int(max_ttl)
+            answer_ttls = [rrset.ttl for rrset in response.answer]
+            if answer_ttls:
+                if sync_mode == 'first': target_ttl = answer_ttls[0]
+                elif sync_mode == 'last': target_ttl = answer_ttls[-1]
+                elif sync_mode == 'highest': target_ttl = max(answer_ttls)
+                elif sync_mode == 'lowest': target_ttl = min(answer_ttls)
+                elif sync_mode == 'average': target_ttl = int(sum(answer_ttls) / len(answer_ttls))
+                req_logger.debug(f"TTL Sync ({sync_mode}): Input={answer_ttls} -> Target={target_ttl}s")
+        
+        # Apply TTL modifications to all rrsets
+        for rrset in all_rrsets:
+            # Apply sync if in answer section
+            if target_ttl is not None and rrset in response.answer:
+                rrset.ttl = int(target_ttl)
+            
+            # Apply min/max constraints
+            if rrset.ttl < min_ttl:
+                rrset.ttl = int(min_ttl)
+            elif rrset.ttl > max_ttl:
+                rrset.ttl = int(max_ttl)
 
     def round_robin_answers(self, response: dns.message.Message, req_logger=None):
         if not self.round_robin: return
@@ -598,7 +635,7 @@ class DNSHandler:
         ecs_ip = None
         edns_mac = None
         
-        allowed_option_codes = {8, 10, 65001}
+        # Process EDNS options once
         filtered_options = []
         
         for opt in request.options:
@@ -621,12 +658,8 @@ class DNSHandler:
             elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
                 filtered_options.append(opt)
         
-        if request.edns >= 0:
-            edns_ver = request.edns
-            payload = request.payload if request.payload >= 512 else 1232
-            request.use_edns(edns=edns_ver, ednsflags=request.ednsflags, options=filtered_options, payload=payload)
-        elif filtered_options:
-            request.use_edns(edns=0, ednsflags=0, options=filtered_options, payload=1232)
+        # Apply filtered options
+        self._apply_edns_options(request, filtered_options)
 
         log_ip = ecs_ip if ecs_ip else client_ip
         log_mac = edns_mac if edns_mac else self.mac_mapper.get_mac(client_ip)
@@ -661,28 +694,16 @@ class DNSHandler:
                 req_logger.info(f"🔇 DROPPED (Decision Cache Hit) | Reason: {reason} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
                 return None
         
+        cache_key = self._make_cache_key(qname_norm, qtype, group_key, policy_name)
         cached_msg, ttl_remain, hits = self.cache.get_dns(qname_norm, qtype, group=group_key, scope=policy_name)
         if cached_msg:
             req_logger.info(f"CACHE HIT [{group_key}/{policy_name}]: TTL={int(ttl_remain)}s")
             cached_msg.id = qid
             
-            if cached_msg.edns >= 0:
-                allowed_option_codes = {8, 10, 65001}
-                filtered_final_options = []
-                for opt in cached_msg.options:
-                    if isinstance(opt, dns.edns.ECSOption):
-                        filtered_final_options.append(opt)
-                    elif isinstance(opt, dns.edns.GenericOption):
-                        if opt.otype in allowed_option_codes:
-                            filtered_final_options.append(opt)
-                    elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
-                        filtered_final_options.append(opt)
-                
-                edns_ver = cached_msg.edns
-                payload = cached_msg.payload if cached_msg.payload >= 512 else 1232
-                cached_msg.use_edns(edns=edns_ver, ednsflags=cached_msg.ednsflags, options=filtered_final_options, payload=payload)
+            # Apply filtered options to cached response
+            response_options = self._process_edns_options(cached_msg, keep_ecs=True, keep_mac=True)
+            self._apply_edns_options(cached_msg, response_options)
             
-            cache_key = (qname_norm, qtype, group_key, policy_name)
             if self.cache.should_prefetch(cache_key, ttl_remain):
                 req_logger.debug(f"Prefetching {qname_norm} (Hits: {hits})")
                 asyncio.create_task(self._resolve_upstream(qname_norm, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key))
@@ -711,11 +732,10 @@ class DNSHandler:
 
         engine = self.rule_engines.get(policy_name)
         if engine:
-            # --- PTR GeoIP Logic ---
+            # PTR GeoIP Logic
             if qtype == dns.rdatatype.PTR:
                 target_ip = self._extract_ip_from_ptr(qname_str)
                 if target_ip:
-                    # Treat the PTR target IP as an "answer" for GeoIP checking
                     m_action, m_rule, m_list = engine.check_answer(None, target_ip, self.geoip)
                     
                     if m_action == 'BLOCK':
@@ -764,7 +784,6 @@ class DNSHandler:
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
                 return None
 
-            # Pass GeoIP lookup for Query Blocking
             action, rule, list_name = engine.is_blocked(qname_norm, geoip_lookup=self.geoip)
             if action == "BLOCK":
                 reason = 'Query GeoIP Block' if '@@' in (rule or '') else 'Domain Rule'
@@ -792,21 +811,9 @@ class DNSHandler:
         self.round_robin_answers(final_msg, req_logger)
         final_msg.id = qid
         
-        if final_msg.edns >= 0:
-            allowed_option_codes = {8, 10, 65001}
-            filtered_final_options = []
-            for opt in final_msg.options:
-                if isinstance(opt, dns.edns.ECSOption):
-                    filtered_final_options.append(opt)
-                elif isinstance(opt, dns.edns.GenericOption):
-                    if opt.otype in allowed_option_codes:
-                        filtered_final_options.append(opt)
-                elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
-                    filtered_final_options.append(opt)
-            
-            edns_ver = final_msg.edns
-            payload = final_msg.payload if final_msg.payload >= 512 else 1232
-            final_msg.use_edns(edns=edns_ver, ednsflags=final_msg.ednsflags, options=filtered_final_options, payload=payload)
+        # Apply filtered options to final response
+        final_options = self._process_edns_options(final_msg, keep_ecs=True, keep_mac=True)
+        self._apply_edns_options(final_msg, final_options)
         
         self._log_response(final_msg, req_logger)
         return final_msg.to_wire()
@@ -817,14 +824,11 @@ class DNSHandler:
         if policy_name in policies:
              upstream_group = policies[policy_name].get('upstream_group', "Default")
         
-        opts_to_keep = []
-        for opt in request.options:
-            if isinstance(opt, dns.edns.ECSOption):
-                 if self.forward_ecs_mode == 'preserve': opts_to_keep.append(opt)
-            elif isinstance(opt, dns.edns.GenericOption) and opt.otype == 65001:
-                 if self.forward_mac_mode == 'preserve': opts_to_keep.append(opt)
-            else:
-                 opts_to_keep.append(opt)
+        # Process options for upstream based on forward modes
+        keep_ecs = (self.forward_ecs_mode == 'preserve')
+        keep_mac = (self.forward_mac_mode == 'preserve')
+        
+        opts_to_keep = self._process_edns_options(request, keep_ecs=keep_ecs, keep_mac=keep_mac)
 
         if self.forward_ecs_mode == 'add':
              try:
@@ -843,9 +847,7 @@ class DNSHandler:
                     req_logger.debug(f"Added MAC: {mac}")
                 except Exception: pass
         
-        edns_ver = request.edns if request.edns >= 0 else 0
-        payload = request.payload if request.payload >= 512 else 1232
-        request.use_edns(edns=edns_ver, ednsflags=request.ednsflags, options=opts_to_keep, payload=payload)
+        self._apply_edns_options(request, opts_to_keep)
         
         try:
             upstream_query_data = request.to_wire()
@@ -917,7 +919,6 @@ class DNSHandler:
                                 )
                                 break
                     
-                    # Process the match result for this rrset
                     if rrset_matched_action == "DROP":
                         req_logger.info(f"🔇 DROPPED | Reason: Answer Match - Silent Drop | Trigger: {rrset_matched_target}")
                         return None
@@ -929,22 +930,18 @@ class DNSHandler:
                             )
                             return self.create_block_response(request, request.question[0].name, qtype).to_wire()
                         else:
-                            # Filter mode: store for later and skip this rrset
                             matched_action = rrset_matched_action
                             matched_rule = rrset_matched_rule
                             matched_list = rrset_matched_list
                             matched_target = rrset_matched_target
                             continue
                     
-                    # Only add to safe_rrsets if not blocked/dropped
                     if rrset_matched_action is None or rrset_matched_action == "PASS":
                         safe_rrsets.append(rrset)
                 
                 section.clear()
                 section.extend(safe_rrsets)
 
-            # Check if filtering left us with no IP records (e.g. empty answer or just CNAMEs left)
-            # This prevents returning CNAME-only chains when the destination IP was blocked.
             has_ips = False
             for rrset in response.answer:
                 if rrset.rdtype in [dns.rdatatype.A, dns.rdatatype.AAAA]:
@@ -961,27 +958,13 @@ class DNSHandler:
                     self.cache.put_dns(blocked_response, qname_norm, qtype, group=group_key, scope=policy_name, req_logger=req_logger)
                     return blocked_response
 
-        # Response modifications (only if we didn't return early above)
         self.collapse_cnames(response, req_logger)
         self.minimize_response(response)
         self.modify_ttls(response, req_logger)
         
-        if response.edns >= 0:
-            allowed_option_codes = {8, 10, 65001}
-            filtered_response_options = []
-            
-            for opt in response.options:
-                if isinstance(opt, dns.edns.ECSOption):
-                    filtered_response_options.append(opt)
-                elif isinstance(opt, dns.edns.GenericOption):
-                    if opt.otype in allowed_option_codes:
-                        filtered_response_options.append(opt)
-                elif hasattr(dns.edns, 'CookieOption') and isinstance(opt, dns.edns.CookieOption):
-                    filtered_response_options.append(opt)
-            
-            edns_ver = response.edns
-            payload = response.payload if response.payload >= 512 else 1232
-            response.use_edns(edns=edns_ver, ednsflags=response.ednsflags, options=filtered_response_options, payload=payload)
+        # Apply filtered options to response
+        response_options = self._process_edns_options(response, keep_ecs=True, keep_mac=True)
+        self._apply_edns_options(response, response_options)
         
         self.cache.put_dns(response, qname_norm, qtype, group=group_key, scope=policy_name, req_logger=req_logger)
         return response

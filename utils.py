@@ -2,17 +2,10 @@
 # filename: utils.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 4.1.0 (Multi-Platform MAC Resolution + IPv6 Support)
+# Version: 5.0.0 (Optimized - Cached Platform Detection)
 # -----------------------------------------------------------------------------
 """
-Utility functions and classes.
-
-Updates:
-- Multi-platform MAC address resolution (Linux, Windows, macOS)
-- IPv6 neighbor discovery support via 'ip neigh'
-- Improved MAC parsing and validation
-- Platform-specific command handling
-- Better error handling and logging
+Utility functions and classes with performance optimizations.
 """
 
 import logging
@@ -20,7 +13,6 @@ import logging.handlers
 import subprocess
 import ipaddress
 import asyncio
-import os
 import time
 from pathlib import Path
 
@@ -44,9 +36,7 @@ def setup_logger(config):
         console_handler.setLevel(level)
         
         if log_config.get('console_timestamp', True):
-            formatter = logging.Formatter(
-                '[%(levelname)s] [%(name)s] %(message)s'
-            )
+            formatter = logging.Formatter('[%(levelname)s] [%(name)s] %(message)s')
         else:
             formatter = logging.Formatter('[%(levelname)s] [%(name)s] %(message)s')
         
@@ -59,9 +49,7 @@ def setup_logger(config):
         try:
             file_handler = logging.FileHandler(file_path)
             file_handler.setLevel(level)
-            formatter = logging.Formatter(
-                '%(asctime)s [%(levelname)s] [%(name)s] %(message)s'
-            )
+            formatter = logging.Formatter('%(asctime)s [%(levelname)s] [%(name)s] %(message)s')
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
         except Exception as e:
@@ -72,10 +60,8 @@ def setup_logger(config):
         try:
             syslog_addr = log_config.get('syslog_address', '/dev/log')
             if syslog_addr.startswith('/'):
-                # Unix socket
                 syslog_handler = logging.handlers.SysLogHandler(address=syslog_addr)
             else:
-                # Network socket
                 host, port = syslog_addr.split(':')
                 protocol = log_config.get('syslog_protocol', 'UDP').upper()
                 socktype = logging.handlers.socket.SOCK_DGRAM if protocol == 'UDP' else logging.handlers.socket.SOCK_STREAM
@@ -124,25 +110,22 @@ def is_ip_in_network(ip_str, cidr_str):
     except Exception:
         return False
 
+def is_link_local(ip_str):
+    """Check if IP is link-local (simplified)"""
+    try:
+        return ipaddress.ip_address(ip_str).is_link_local
+    except Exception:
+        return False
+
 def get_server_ips(config):
     """
     Get list of IPs to bind to based on config.
     Supports both explicit bind_ip and bind_interfaces.
-    Filters out link-local addresses (169.254.x.x and fe80::).
+    Filters out link-local addresses.
     """
     logger = get_logger("Utils")
     server_cfg = config.get('server', {})
     ips = []
-    
-    def is_link_local(ip_str):
-        """Check if IP is link-local (should not bind to these)"""
-        try:
-            ip = ipaddress.ip_address(ip_str)
-            # IPv4 link-local: 169.254.0.0/16
-            # IPv6 link-local: fe80::/10
-            return ip.is_link_local
-        except Exception:
-            return False
     
     # Explicit IP addresses
     if 'bind_ip' in server_cfg:
@@ -184,7 +167,6 @@ def get_server_ips(config):
                     if netifaces.AF_INET6 in addrs:
                         for addr_info in addrs[netifaces.AF_INET6]:
                             if 'addr' in addr_info:
-                                # Remove scope ID if present
                                 ip6 = addr_info['addr'].split('%')[0]
                                 if is_link_local(ip6):
                                     logger.debug(f"Skipping link-local address on {iface}: {ip6}")
@@ -198,14 +180,10 @@ def get_server_ips(config):
                     logger.warning(f"Failed to get IPs for interface {iface}: {e}")
                     
         except ImportError:
-            # Fallback: try to get IPs using 'ip' command
             logger.info("netifaces not installed, using system commands as fallback")
             
             for iface in interfaces:
                 try:
-                    import subprocess
-                    
-                    # Try 'ip addr show' (Linux)
                     result = subprocess.run(
                         ['ip', 'addr', 'show', iface],
                         capture_output=True,
@@ -217,24 +195,20 @@ def get_server_ips(config):
                         for line in result.stdout.splitlines():
                             line = line.strip()
                             
-                            # IPv4: "inet 192.168.1.1/24"
                             if line.startswith('inet '):
                                 parts = line.split()
                                 if len(parts) >= 2:
                                     ip = parts[1].split('/')[0]
                                     if is_link_local(ip):
-                                        logger.debug(f"Skipping link-local address on {iface}: {ip}")
                                         continue
                                     ips.append(ip)
                                     logger.debug(f"Interface {iface} IPv4: {ip}")
                             
-                            # IPv6: "inet6 fe80::1/64"
                             elif line.startswith('inet6 '):
                                 parts = line.split()
                                 if len(parts) >= 2:
                                     ip6 = parts[1].split('/')[0]
                                     if is_link_local(ip6):
-                                        logger.debug(f"Skipping link-local address on {iface}: {ip6}")
                                         continue
                                     ips.append(ip6)
                                     logger.debug(f"Interface {iface} IPv6: {ip6}")
@@ -242,7 +216,6 @@ def get_server_ips(config):
                         logger.warning(f"Failed to query interface {iface} with 'ip' command")
                         
                 except FileNotFoundError:
-                    # Try 'ifconfig' (older systems, macOS)
                     try:
                         result = subprocess.run(
                             ['ifconfig', iface],
@@ -255,24 +228,20 @@ def get_server_ips(config):
                             for line in result.stdout.splitlines():
                                 line = line.strip()
                                 
-                                # IPv4: "inet 192.168.1.1 netmask ..."
                                 if line.startswith('inet '):
                                     parts = line.split()
                                     if len(parts) >= 2:
                                         ip = parts[1]
                                         if is_link_local(ip):
-                                            logger.debug(f"Skipping link-local address on {iface}: {ip}")
                                             continue
                                         ips.append(ip)
                                         logger.debug(f"Interface {iface} IPv4: {ip}")
                                 
-                                # IPv6: "inet6 fe80::1 prefixlen ..."
                                 elif line.startswith('inet6 '):
                                     parts = line.split()
                                     if len(parts) >= 2:
                                         ip6 = parts[1].split('%')[0]
                                         if is_link_local(ip6):
-                                            logger.debug(f"Skipping link-local address on {iface}: {ip6}")
                                             continue
                                         ips.append(ip6)
                                         logger.debug(f"Interface {iface} IPv6: {ip6}")
@@ -303,25 +272,27 @@ def get_server_ips(config):
 class MacMapper:
     """
     Maps IP addresses to MAC addresses using system neighbor table.
-    Supports multiple platforms (Linux, Windows, macOS) and both IPv4 and IPv6.
-    Includes enhanced logging and periodic refresh.
+    Optimized with cached platform detection and command selection.
     """
     def __init__(self, refresh_interval=300):
         self.cache = {}
         self.refresh_interval = refresh_interval
         self.last_refresh = 0
         self.logger = get_logger("MacMapper")
+        
+        # Cache platform detection
         self.platform = self._detect_platform()
+        self.arp_command = self._select_arp_command()
         self.ipv6_supported = False
         
-        # Initial load with logging
+        # Initial load
         self._refresh_cache()
         
         # Start background refresh task
         asyncio.create_task(self._refresh_loop())
     
     def _detect_platform(self):
-        """Detect the operating system platform"""
+        """Detect the operating system platform (cached)"""
         import platform
         system = platform.system().lower()
         
@@ -335,25 +306,31 @@ class MacMapper:
             self.logger.warning(f"Unknown platform '{system}', defaulting to linux")
             return 'linux'
     
+    def _select_arp_command(self):
+        """Select appropriate ARP command for platform (cached)"""
+        if self.platform == 'linux':
+            return ['ip', 'neigh', 'show']
+        elif self.platform == 'macos':
+            return ['arp', '-na']
+        elif self.platform == 'windows':
+            return ['arp', '-a']
+        return ['arp', '-an']
+    
     def _parse_mac(self, mac_str):
         """Parse and validate MAC address, normalizing format"""
         if not mac_str:
             return None
         
-        # Remove common separators and convert to uppercase
         clean = mac_str.upper().replace(':', '').replace('-', '').replace('.', '')
         
-        # Must be exactly 12 hex characters
         if len(clean) != 12:
             return None
         
-        # Validate hex
         try:
             int(clean, 16)
         except ValueError:
             return None
         
-        # Return in colon-separated format
         return ':'.join(clean[i:i+2] for i in range(0, 12, 2))
     
     def _parse_linux_ip_neigh(self, output):
@@ -362,8 +339,6 @@ class MacMapper:
         ipv6_count = 0
         
         for line in output.splitlines():
-            # Format: 192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
-            # Format: fe80::1 dev eth0 lladdr aa:bb:cc:dd:ee:ff router REACHABLE
             parts = line.split()
             
             if len(parts) < 4:
@@ -372,13 +347,11 @@ class MacMapper:
             try:
                 ip = parts[0]
                 
-                # Find 'lladdr' keyword and get MAC from next position
                 if 'lladdr' in parts:
                     idx = parts.index('lladdr')
                     if idx + 1 < len(parts):
                         mac = self._parse_mac(parts[idx + 1])
                         if mac:
-                            # Check if IPv6
                             try:
                                 ip_obj = ipaddress.ip_address(ip)
                                 if ip_obj.version == 6:
@@ -401,17 +374,14 @@ class MacMapper:
         new_cache = {}
         
         for line in output.splitlines():
-            # Format: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff [ether] on eth0
             parts = line.split()
             
             if len(parts) < 4:
                 continue
             
             try:
-                # IP is in parentheses at position 1
                 ip = parts[1].strip('()')
                 
-                # MAC is at position 3 (after 'at')
                 if parts[2] == 'at':
                     mac = self._parse_mac(parts[3])
                     if mac:
@@ -426,17 +396,14 @@ class MacMapper:
         new_cache = {}
         
         for line in output.splitlines():
-            # Format: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
             parts = line.split()
             
             if len(parts) < 4:
                 continue
             
             try:
-                # IP is in parentheses at position 1
                 ip = parts[1].strip('()')
                 
-                # MAC is at position 3 (after 'at')
                 if parts[2] == 'at':
                     mac = self._parse_mac(parts[3])
                     if mac:
@@ -451,7 +418,6 @@ class MacMapper:
         new_cache = {}
         
         for line in output.splitlines():
-            # Format:   192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic
             line = line.strip()
             
             if not line or 'Interface:' in line or 'Internet Address' in line:
@@ -467,7 +433,6 @@ class MacMapper:
                 mac = self._parse_mac(parts[1])
                 
                 if mac:
-                    # Validate IP
                     ipaddress.ip_address(ip)
                     new_cache[ip] = mac
             except (ValueError, IndexError):
@@ -482,75 +447,26 @@ class MacMapper:
         method_used = "unknown"
         
         try:
-            if self.platform == 'linux':
-                # Try 'ip neigh show' first (supports IPv6)
-                try:
-                    result = subprocess.run(
-                        ['ip', 'neigh', 'show'],
-                        capture_output=True,
-                        text=True,
-                        timeout=2
-                    )
-                    
-                    if result.returncode == 0:
-                        new_cache = self._parse_linux_ip_neigh(result.stdout)
-                        method_used = "ip neigh"
-                    else:
-                        raise FileNotFoundError()
-                
-                except FileNotFoundError:
-                    # Fallback to 'arp -an' (IPv4 only)
-                    self.logger.debug("'ip neigh' not available, falling back to 'arp'")
-                    result = subprocess.run(
-                        ['arp', '-an'],
-                        capture_output=True,
-                        text=True,
-                        timeout=2
-                    )
-                    
-                    if result.returncode == 0:
-                        new_cache = self._parse_linux_arp(result.stdout)
-                        method_used = "arp (IPv4 only)"
-                        
-                        if not self.ipv6_supported:
-                            self.logger.info("IPv6 neighbor discovery not available (install 'iproute2' for IPv6 support)")
-                            self.ipv6_supported = None  # Mark as checked
+            result = subprocess.run(
+                self.arp_command,
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
             
-            elif self.platform == 'macos':
-                # macOS uses 'arp -na' (IPv4 only)
-                result = subprocess.run(
-                    ['arp', '-na'],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                
-                if result.returncode == 0:
+            if result.returncode == 0:
+                if self.platform == 'linux' and self.arp_command[0] == 'ip':
+                    new_cache = self._parse_linux_ip_neigh(result.stdout)
+                    method_used = "ip neigh"
+                elif self.platform == 'linux':
+                    new_cache = self._parse_linux_arp(result.stdout)
+                    method_used = "arp (IPv4 only)"
+                elif self.platform == 'macos':
                     new_cache = self._parse_macos_arp(result.stdout)
                     method_used = "arp -na (IPv4 only)"
-                    
-                    if not self.ipv6_supported:
-                        self.logger.info("IPv6 neighbor discovery not available on macOS via arp command")
-                        self.ipv6_supported = None
-                
-                # TODO: Could also try 'ndp -an' for IPv6 on macOS
-            
-            elif self.platform == 'windows':
-                # Windows uses 'arp -a' (IPv4 only)
-                result = subprocess.run(
-                    ['arp', '-a'],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                
-                if result.returncode == 0:
+                elif self.platform == 'windows':
                     new_cache = self._parse_windows_arp(result.stdout)
                     method_used = "arp -a (IPv4 only)"
-                    
-                    if not self.ipv6_supported:
-                        self.logger.info("IPv6 neighbor discovery not available on Windows via arp command (use 'netsh' for IPv6)")
-                        self.ipv6_supported = None
         
         except FileNotFoundError as e:
             self.logger.error(f"ARP command not found on {self.platform}: {e}")
@@ -575,18 +491,8 @@ class MacMapper:
         if not self.cache:
             self.logger.warning(f"MAC cache is empty - neighbor table may be unavailable ({method_used})")
         else:
-            # Count IPv4 vs IPv6
-            ipv4_count = 0
-            ipv6_count = 0
-            for ip in self.cache:
-                try:
-                    ip_obj = ipaddress.ip_address(ip)
-                    if ip_obj.version == 4:
-                        ipv4_count += 1
-                    else:
-                        ipv6_count += 1
-                except ValueError:
-                    pass
+            ipv4_count = sum(1 for ip in self.cache if ':' not in ip)
+            ipv6_count = len(self.cache) - ipv4_count
             
             version_info = f"IPv4: {ipv4_count}, IPv6: {ipv6_count}" if ipv6_count > 0 else f"IPv4: {ipv4_count}"
             
@@ -596,7 +502,6 @@ class MacMapper:
                 f"in {duration:.3f}s"
             )
             
-            # Log details at DEBUG level
             if self.logger.isEnabledFor(logging.DEBUG):
                 for ip in added:
                     self.logger.debug(f"MAC Added: {ip} -> {new_cache[ip]}")
@@ -613,7 +518,6 @@ class MacMapper:
     
     def get_mac(self, ip):
         """Get MAC address for an IP (IPv4 or IPv6)"""
-        # Refresh if cache is stale (for on-demand updates)
         if time.time() - self.last_refresh > self.refresh_interval:
             self._refresh_cache()
         
@@ -626,8 +530,8 @@ class GroupFileLoader:
     def __init__(self, config):
         self.config = config
         self.logger = get_logger("GroupFileLoader")
-        self.file_groups = {}  # group_name -> set of identifiers
-        self.file_mtimes = {}  # file_path -> last modified time
+        self.file_groups = {}
+        self.file_mtimes = {}
         self.refresh_interval = config.get('group_files', {}).get('refresh_interval', 300)
         
         # Initial load
@@ -646,7 +550,7 @@ class GroupFileLoader:
         
         for group_name, file_path in group_files_config.items():
             if group_name == 'refresh_interval':
-                continue  # Skip config parameter
+                continue
             
             if not isinstance(file_path, str):
                 continue
@@ -662,35 +566,28 @@ class GroupFileLoader:
                 self.logger.warning(f"Group file not found: {file_path} for group '{group_name}'")
                 return
             
-            # Check if file changed
             mtime = path.stat().st_mtime
             if file_path in self.file_mtimes and self.file_mtimes[file_path] == mtime:
-                return  # No changes
+                return
             
-            # Read file
             with open(path, 'r') as f:
                 lines = f.readlines()
             
-            # Parse identifiers
             identifiers = set()
             for line_num, line in enumerate(lines, 1):
                 line = line.strip()
                 
-                # Skip comments and empty lines
                 if not line or line.startswith('#'):
                     continue
                 
-                # Validate identifier format
                 identifier = line.lower()
                 
-                # Basic validation
                 if any(c in identifier for c in [' ', '\t', '\n']):
                     self.logger.warning(f"Invalid identifier in {file_path}:{line_num}: '{line}' (contains whitespace)")
                     continue
                 
                 identifiers.add(identifier)
             
-            # Update cache
             old_count = len(self.file_groups.get(group_name, set()))
             self.file_groups[group_name] = identifiers
             self.file_mtimes[file_path] = mtime
@@ -728,20 +625,17 @@ def merge_groups(inline_groups, file_loader):
     """
     merged = {}
     
-    # Start with inline groups
     for group_name, identifiers in inline_groups.items():
         if isinstance(identifiers, list):
             merged[group_name] = set(id.lower().strip() for id in identifiers)
         else:
             merged[group_name] = set()
     
-    # Add/merge file groups
     if file_loader:
         for group_name, file_identifiers in file_loader.get_all_groups().items():
             if group_name not in merged:
                 merged[group_name] = set()
             merged[group_name].update(file_identifiers)
     
-    # Convert back to lists
     return {name: list(ids) for name, ids in merged.items()}
 

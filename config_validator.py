@@ -2,16 +2,17 @@
 # filename: config_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 2.1.0
+# Version: 2.2.0 (Optimized - Inlined Helper Functions)
 # -----------------------------------------------------------------------------
 """
-Configuration Validation Module - Optimized version using validation utilities.
+Configuration Validation Module - Optimized version.
 """
 
 import re
+import ipaddress
 from typing import Dict, List, Tuple, Any
 from utils import get_logger
-from validation import is_valid_ip, is_valid_cidr, is_valid_mac, extract_ip_from_string
+from validation import is_valid_ip, is_valid_cidr, is_valid_domain
 
 logger = get_logger("ConfigValidator")
 
@@ -145,8 +146,23 @@ class ConfigValidator:
                         if proto not in ['udp', 'tcp']:
                             self.errors.append(f"upstream.bootstrap: Invalid protocol '{proto}' in '{server}'")
                     
-                    # Extract and validate IP
-                    ip_part = extract_ip_from_string(server)
+                    # Extract and validate IP (inline)
+                    ip_part = server
+                    if '://' in ip_part:
+                        ip_part = ip_part.split('://', 1)[1]
+                    if ip_part.startswith('['):
+                        bracket_end = ip_part.find(']')
+                        if bracket_end > 0:
+                            ip_part = ip_part[1:bracket_end]
+                        else:
+                            ip_part = ip_part[1:]
+                    elif '.' in ip_part:
+                        ip_part = ip_part.split(':')[0]
+                    elif ip_part.count(':') > 1:
+                        pass  # Bare IPv6
+                    else:
+                        ip_part = ip_part.rsplit(':', 1)[0]
+                    
                     if not is_valid_ip(ip_part):
                         self.errors.append(f"upstream.bootstrap: Invalid IP '{ip_part}' in '{server}'")
         
@@ -280,6 +296,11 @@ class ConfigValidator:
         if empty_rcode not in valid_empty_rcodes:
              self.errors.append(f"response.cname_empty_rcode: Invalid rcode '{empty_rcode}', must be one of {valid_empty_rcodes}")
     
+    def _is_valid_mac(self, mac_str: str) -> bool:
+        """Validate MAC address format (inlined)"""
+        pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
+        return bool(pattern.match(mac_str))
+    
     def _validate_groups(self, groups_cfg: Dict[str, Any]):
         """Validate client groups configuration"""
         if not isinstance(groups_cfg, dict):
@@ -319,7 +340,7 @@ class ConfigValidator:
                 
                 elif ':' in ident and len(ident.split(':')) >= 5:
                     # Could be MAC address or IPv6
-                    if is_valid_mac(ident):
+                    if self._is_valid_mac(ident):
                         continue  # Valid MAC
                     elif is_valid_ip(ident):
                         continue  # Valid IPv6

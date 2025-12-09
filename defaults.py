@@ -2,7 +2,7 @@
 # filename: defaults.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.0
+# Version: 2.0.0 (Optimized - Simplified Merging)
 # -----------------------------------------------------------------------------
 """
 Default configuration values - single source of truth.
@@ -81,39 +81,9 @@ DEFAULT_CONFIG = {
 }
 
 
-def get_config_value(config: dict, path: str, default=None):
-    """
-    Get nested config value with dot notation.
-    
-    Args:
-        config: Configuration dictionary
-        path: Dot-separated path (e.g., 'upstream.mode')
-        default: Default value if not found
-        
-    Returns:
-        Configuration value or default
-        
-    Examples:
-        >>> get_config_value(config, 'upstream.mode', 'fastest')
-        'loadbalance'
-        >>> get_config_value(config, 'missing.key', 'default')
-        'default'
-    """
-    keys = path.split('.')
-    value = config
-    
-    for key in keys:
-        if isinstance(value, dict) and key in value:
-            value = value[key]
-        else:
-            return default
-    
-    return value
-
-
 def merge_with_defaults(config: dict) -> dict:
     """
-    Merge user configuration with defaults.
+    Merge user configuration with defaults (optimized).
     
     Args:
         config: User configuration dictionary
@@ -123,16 +93,17 @@ def merge_with_defaults(config: dict) -> dict:
     """
     import copy
     
+    # Start with defaults
     merged = copy.deepcopy(DEFAULT_CONFIG)
     
-    def deep_merge(base, updates):
-        """Recursively merge updates into base"""
-        for key, value in updates.items():
-            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-                deep_merge(base[key], value)
-            else:
-                base[key] = value
+    # Shallow merge top-level keys
+    for key, value in config.items():
+        if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+            # Deep merge for nested dicts
+            merged[key].update(value)
+        else:
+            # Direct replacement for non-dicts
+            merged[key] = value
     
-    deep_merge(merged, config)
     return merged
 
