@@ -1,39 +1,29 @@
 # ==============================================================================
-# Vibe-DNS Automated Build & Release Pipeline
+# Vibe-DNS Automated Build & Release Pipeline (Stable Python 3.12)
 # ==============================================================================
 # This workflow compiles Python scripts into standalone executables for:
-#   - Linux (Generic glibc 2.28+ compatibility via Manylinux)
+#   - Linux (Generic glibc 2.28+ compatibility via Manylinux container)
 #   - Windows (x86_64)
 #   - macOS (Apple Silicon / ARM64)
-#
-# Features:
-#   - Automatic builds on every push to main/master.
-#   - Automatic GitHub Release creation when a tag (v*) is pushed.
 # ==============================================================================
 
 name: Build Vibe-DNS Binaries
 
-# 1. TRIGGERS
-# Define when this workflow runs.
 on:
   push:
     branches: [ "main", "master" ]
-    # Also trigger when a version tag is pushed (e.g., v1.0.0) to create a release
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
 
-# 2. PERMISSIONS
-# Required to allow the workflow to create Releases and upload assets.
 permissions:
   contents: write
 
-# 3. JOBS
 jobs:
   build:
     name: Build for ${{ matrix.platform_name }}
     runs-on: ${{ matrix.os }}
-    # Only use a docker container if the matrix step defines one (used for Linux)
+    # Only use a container if defined (for Linux)
     container: ${{ matrix.container_image }}
     
     strategy:
@@ -41,98 +31,88 @@ jobs:
       matrix:
         include:
           # --- Linux (Generic / Manylinux) ---
-          # We build inside a specialized container based on AlmaLinux 8 (glibc 2.28).
-          # This ensures the binary runs on Ubuntu 20.04+, Debian 10+, RHEL 8+, etc.
+          # Built inside AlmaLinux 8 container (glibc 2.28)
+          # Compatible with Ubuntu 20.04+, Debian 10+, RHEL 8+
           - os: ubuntu-latest
             platform_name: linux-amd64
             container_image: quay.io/pypa/manylinux_2_28_x86_64
             executable_ext: ""
 
           # --- Windows (x86_64) ---
-          # Standard Windows Server 2022 runner
           - os: windows-latest
             platform_name: windows-amd64
             container_image: null
             executable_ext: ".exe"
 
           # --- macOS (Apple Silicon) ---
-          # Targets M1/M2/M3 Macs (ARM64). Use 'macos-13' if you need Intel support.
           - os: macos-14
             platform_name: macos-arm64
             container_image: null
             executable_ext: ""
 
     steps:
-    # A. Check out the code
     - uses: actions/checkout@v4
 
-    # B. Set up Python (Linux Special Case)
-    # The manylinux container has pre-installed Python versions in /opt/python.
+    # 1. SETUP PYTHON (Linux Container)
+    # The manylinux image has pre-installed Python versions in /opt/python.
     # We add Python 3.12 to the PATH manually.
-    - name: Setup Python (Linux Container)
+    - name: Setup Python 3.12 (Linux)
       if: matrix.platform_name == 'linux-amd64'
       run: |
         echo "/opt/python/cp312-cp312/bin" >> $GITHUB_PATH
 
-    # C. Set up Python (Windows/Mac Standard)
-    # For standard runners, we use the official action.
-    - name: Setup Python (Windows/Mac)
+    # 2. SETUP PYTHON (Windows/Mac)
+    # Standard setup action for non-container jobs.
+    - name: Setup Python 3.12 (Windows/Mac)
       if: matrix.platform_name != 'linux-amd64'
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         cache: 'pip'
 
-    # D. Install Dependencies
+    # 3. INSTALL DEPENDENCIES
     - name: Install Dependencies
       run: |
-        # Fix for git permissions in container
+        # Git safety fix for containers
         git config --global --add safe.directory '*' || true
         
         pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
 
-    # E. Compile the Main Server
-    # Creates a single-file executable for the server.
+    # 4. BUILD SERVER
     - name: Build Server Binary
       run: |
-        pyinstaller --enable-shared --clean --onefile --name vibe-dns-server${{ matrix.executable_ext }} server.py
+        pyinstaller --clean --onefile --name vibe-dns-server${{ matrix.executable_ext }} server.py
 
-    # F. Compile the GeoIP Compiler Utility
-    # Creates the tool needed to generate the GeoIP database.
+    # 5. BUILD COMPILER
     - name: Build GeoIP Compiler Binary
       run: |
-        pyinstaller --enable-shared --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
+        pyinstaller --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
 
-    # G. Organize Files for Release
-    # Gathers binaries and config files into a single 'release' folder.
+    # 6. ORGANIZE ARTIFACTS
     - name: Prepare Release Artifacts
       shell: bash
       run: |
         mkdir -p release
         
-        # 1. Move compiled binaries from dist/
+        # Move binaries
         mv dist/vibe-dns-server${{ matrix.executable_ext }} release/
         mv dist/geoip-compiler${{ matrix.executable_ext }} release/
         
-        # 2. Copy essential configuration files
-        # Renaming full_config.yaml to config.yaml for user convenience
+        # Copy config files
         cp full_config.yaml release/config.yaml
         cp categories.json release/
         cp geoip.txt release/
 
-    # H. Upload Artifacts (For Inspection)
-    # Allows you to download builds from the Actions tab even if not a release.
+    # 7. UPLOAD ARTIFACTS (Workflow Summary)
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: vibe-dns-${{ matrix.platform_name }}
         path: release/
 
-    # I. Publish to GitHub Releases (On Tag Only)
-    # If the push was a tag (e.g. v1.0.0), this creates a public release
-    # and uploads the files to it.
+    # 8. PUBLISH RELEASE (On Tag Only)
     - name: Publish to GitHub Release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
