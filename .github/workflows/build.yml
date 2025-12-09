@@ -97,13 +97,13 @@ jobs:
     # Creates a single-file executable for the server.
     - name: Build Server Binary
       run: |
-        pyinstaller --clean --onefile --name vibe-dns-server${{ matrix.executable_ext }} server.py
+        pyinstaller --enable-shared --clean --onefile --name vibe-dns-server${{ matrix.executable_ext }} server.py
 
     # F. Compile the GeoIP Compiler Utility
     # Creates the tool needed to generate the GeoIP database.
     - name: Build GeoIP Compiler Binary
       run: |
-        pyinstaller --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
+        pyinstaller --enable-shared --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
 
     # G. Organize Files for Release
     # Gathers binaries and config files into a single 'release' folder.
