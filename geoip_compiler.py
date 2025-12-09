@@ -2,11 +2,14 @@
 # filename: geoip_compiler.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 7.2.0 (Unified Region Definitions)
+# Version: 7.2.1 (Query-only GeoIP Documentation)
 # -----------------------------------------------------------------------------
 """
 Unified compiler for GeoIP databases.
 Compiles MMDB OR JSON + GeoNames into a memory-mappable binary format.
+
+Changes:
+- Documentation now explains @ vs @@ syntax
 """
 
 import urllib.request
@@ -155,18 +158,20 @@ class GeoNamesCompiler:
             f.write(" VIBE-DNS GEOIP RULE REFERENCE\n")
             f.write("=" * 90 + "\n\n")
             f.write("Use these tags in your blocklists or policy files.\n")
-            f.write("Format: @@TAG\n\n")
+            f.write("Syntax:\n")
+            f.write("  @@TAG  - Blocks on BOTH query (ccTLD) and answer (IP)\n")
+            f.write("  @TAG   - Blocks ONLY on query (ccTLD)\n\n")
             
             # Continents
             f.write("-" * 90 + "\n")
             f.write(" CONTINENTS\n")
             f.write("-" * 90 + "\n")
-            f.write(f"{'Code':<7}| {'Rule':<13}| {'Name':<30}\n")
+            f.write(f"{'Code':<7}| {'Rule (Both)':<15}| {'Rule (Query)':<15}| {'Name':<30}\n")
             f.write("-" * 90 + "\n")
             
             for code, info in sorted(CONTINENTS.items()):
-                f.write(f"{code:<7}| @@{code:<11}| {info['name']:<30}\n")
-                f.write(f"{'':7}| @@{info['name']:<11}| {info['name']} (Alias)\n")
+                f.write(f"{code:<7}| @@{code:<13}| @{code:<14}| {info['name']:<30}\n")
+                f.write(f"{'':7}| @@{info['name']:<13}| @{info['name']:<14}| {info['name']} (Alias)\n")
             
             # Regions
             f.write("\n" + "-" * 90 + "\n")
@@ -178,24 +183,25 @@ class GeoNamesCompiler:
                 countries = region_data.get('countries', [])
                 desc = region_data.get('description', '')
                 
-                f.write(f"Region:      {region_name}\n")
-                f.write(f"Rule:        @@{region_name}\n")
+                f.write(f"Region:       {region_name}\n")
+                f.write(f"Rule (Both):  @@{region_name}\n")
+                f.write(f"Rule (Query): @{region_name}\n")
                 if desc:
-                    f.write(f"Description: {desc}\n")
-                f.write(f"Countries:   {', '.join(sorted(countries))}\n")
+                    f.write(f"Description:  {desc}\n")
+                f.write(f"Countries:    {', '.join(sorted(countries))}\n")
                 f.write("-" * 40 + "\n")
             
             # Countries
             f.write("\n" + "-" * 90 + "\n")
             f.write(" COUNTRIES (ISO 3166-1 alpha-2)\n")
             f.write("-" * 90 + "\n")
-            f.write(f"{'ISO':<7}| {'Rule':<13}| {'Continent':<11}| {'Name':<40}\n")
+            f.write(f"{'ISO':<7}| {'Rule (Both)':<15}| {'Rule (Query)':<15}| {'Continent':<11}| {'Name':<30}\n")
             f.write("-" * 90 + "\n")
             
             for iso2, data in sorted(self.countries.items()):
                 cont = data.get('continent', 'XX')
                 name = data.get('name', 'Unknown')
-                f.write(f"{iso2:<7}| @@{iso2:<11}| {cont:<11}| {name:<40}\n")
+                f.write(f"{iso2:<7}| @@{iso2:<13}| @{iso2:<14}| {cont:<11}| {name:<30}\n")
         
         logger.info(f"✓ Rules reference exported to {filename}")
 

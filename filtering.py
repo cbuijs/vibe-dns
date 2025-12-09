@@ -2,11 +2,15 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.8.0 (Enhanced Query GeoIP Logging)
+# Version: 6.8.1 (Query-only GeoIP Support)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine with IntervalTree for ranges and Map-based GeoIP.
 Requires: pip install intervaltree
+
+Changes:
+- Single @ rules (@ASIA) apply ONLY to queries (ccTLD)
+- Double @@ rules (@@ASIA) apply to BOTH queries (ccTLD) AND answers (IP)
 """
 
 import regex
@@ -151,13 +155,13 @@ class RuleEngine:
         self.answer_block_ips = IntervalTree()
         self.answer_block_regex = []
         
-        # Answer-only GeoIP rules
-        self.answer_block_geoip = defaultdict(list)
-        self.answer_drop_geoip = defaultdict(list)
-        
-        # Query GeoIP rules (ccTLD-based)
+        # Query-only GeoIP rules (ccTLD-based, single @)
         self.query_block_geoip = defaultdict(list)
         self.query_drop_geoip = defaultdict(list)
+        
+        # Answer-only GeoIP rules (IP-based, double @@)
+        self.answer_block_geoip = defaultdict(list)
+        self.answer_drop_geoip = defaultdict(list)
         
         self.answer_drop_trie = DomainTrie()
         self.answer_drop_ips = IntervalTree()
@@ -212,6 +216,7 @@ class RuleEngine:
         
         # --- GeoIP Rules ---
         if rule_text.startswith('@@'):
+            # BOTH query (ccTLD) AND answer (IP)
             location_spec = rule_text[2:].upper()
             data = (rule_text, list_name)
             
@@ -229,7 +234,31 @@ class RuleEngine:
                 return "ignored"
             
             logger.info(
-                f"✓ Added GEO-IP rule: {rule_text} | "
+                f"✓ Added GEO-IP rule (Query+Answer): {rule_text} | "
+                f"Location: {location_spec} | "
+                f"Action: {list_type.upper()} | "
+                f"List: '{list_name}'"
+            )
+            return "geoip"
+        
+        elif rule_text.startswith('@') and not rule_text.startswith('@@'):
+            # QUERY ONLY (ccTLD-based)
+            location_spec = rule_text[1:].upper()
+            data = (rule_text, list_name)
+            
+            if list_type == 'drop':
+                self.query_drop_geoip[location_spec].append(data)
+            elif list_type == 'block':
+                self.query_block_geoip[location_spec].append(data)
+            else:
+                logger.warning(
+                    f"⚠ GEO-IP rule only works in block/drop lists: {rule_text} | "
+                    f"List: '{list_name}' | Type: '{list_type}'"
+                )
+                return "ignored"
+            
+            logger.info(
+                f"✓ Added GEO-IP rule (Query ONLY): {rule_text} | "
                 f"Location: {location_spec} | "
                 f"Action: {list_type.upper()} | "
                 f"List: '{list_name}'"
