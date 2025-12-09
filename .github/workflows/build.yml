@@ -1,6 +1,16 @@
 # ==============================================================================
 # Vibe-DNS Automated Build & Release Pipeline
 # ==============================================================================
+# This workflow compiles Python scripts into standalone executables for:
+#   - Linux (Generic glibc 2.31+ compatibility via Debian 11 container)
+#   - Windows (x86_64)
+#   - macOS (Apple Silicon / ARM64)
+#
+# NAMING CONVENTION:
+# Executables are now named per-platform, e.g.:
+#   vibe-dns-server-linux-amd64
+#   geoip-compiler-windows-amd64.exe
+# ==============================================================================
 
 name: Build Vibe-DNS Binaries
 
@@ -25,7 +35,6 @@ jobs:
       matrix:
         include:
           # --- Linux (Generic) ---
-          # FIX: Switched from manylinux (static python) to Debian 11 (shared python).
           # Compatibility: Ubuntu 20.04+, Debian 11+, RHEL 9+.
           - os: ubuntu-latest
             platform_name: linux-amd64
@@ -47,17 +56,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. SETUP PYTHON (Linux Container)
-    # Since we are already inside a Python container, we don't need to "install" it.
-    # We just explicitly ensure pip is up to date.
+    # 1. SETUP PYTHON (Linux)
     - name: Configure Python (Linux)
       if: matrix.platform_name == 'linux-amd64'
-      run: |
-        # Mark the workspace as safe for git (required inside containers)
-        git config --global --add safe.directory '*'
+      run: git config --global --add safe.directory '*'
 
     # 2. SETUP PYTHON (Windows/Mac)
-    # For standard runners, we use the official action.
     - name: Setup Python (Windows/Mac)
       if: matrix.platform_name != 'linux-amd64'
       uses: actions/setup-python@v5
@@ -72,15 +76,19 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    # 4. BUILD SERVER
+    # 4. BUILD SERVER (With Precise Naming)
     - name: Build Server Binary
       run: |
-        pyinstaller --clean --onefile --name vibe-dns-server${{ matrix.executable_ext }} server.py
+        pyinstaller --clean --onefile \
+          --name vibe-dns-server-${{ matrix.platform_name }}${{ matrix.executable_ext }} \
+          server.py
 
-    # 5. BUILD COMPILER
+    # 5. BUILD COMPILER (With Precise Naming)
     - name: Build GeoIP Compiler Binary
       run: |
-        pyinstaller --clean --onefile --name geoip-compiler${{ matrix.executable_ext }} geoip_compiler.py
+        pyinstaller --clean --onefile \
+          --name geoip-compiler-${{ matrix.platform_name }}${{ matrix.executable_ext }} \
+          geoip_compiler.py
 
     # 6. ORGANIZE ARTIFACTS
     - name: Prepare Release Artifacts
@@ -88,16 +96,16 @@ jobs:
       run: |
         mkdir -p release
         
-        # Move binaries
-        mv dist/vibe-dns-server${{ matrix.executable_ext }} release/
-        mv dist/geoip-compiler${{ matrix.executable_ext }} release/
+        # Move the specifically named binaries
+        mv dist/vibe-dns-server-${{ matrix.platform_name }}${{ matrix.executable_ext }} release/
+        mv dist/geoip-compiler-${{ matrix.platform_name }}${{ matrix.executable_ext }} release/
         
         # Copy config files
         cp full_config.yaml release/config.yaml
         cp categories.json release/
         cp geoip.txt release/
 
-    # 7. UPLOAD ARTIFACTS (Workflow Summary)
+    # 7. UPLOAD ARTIFACTS (For Inspection)
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -110,8 +118,8 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          release/vibe-dns-server${{ matrix.executable_ext }}
-          release/geoip-compiler${{ matrix.executable_ext }}
+          release/vibe-dns-server-${{ matrix.platform_name }}${{ matrix.executable_ext }}
+          release/geoip-compiler-${{ matrix.platform_name }}${{ matrix.executable_ext }}
           release/config.yaml
           release/categories.json
           release/geoip.txt
