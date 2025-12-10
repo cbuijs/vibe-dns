@@ -28,7 +28,7 @@ Schedules allow policies to activate only during certain hours — like “bedti
 A built-in categorization layer can classify domains (ads, adult, social media, gambling, etc.) with confidence scoring. Policies can block categories selectively, per client group.
 
 **GEOIP and ASN**
-A built-in GEOIP lnd ASN layer can classify domains and IPs for their location or ASN. Policies can block selectively, per client group.
+A built-in GEOIP and ASN layer can classify domains and IPs for their location or ASN. Policies can block selectively, per client group.
 
 **Flexible policy engine**
 Policies decide what to do with a query:
