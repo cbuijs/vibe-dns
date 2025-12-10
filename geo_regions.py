@@ -238,6 +238,9 @@ REGION_DEFINITIONS = {
     'POLYNESIA': {
         'countries': ['AS', 'CK', 'NU', 'PF', 'PN', 'TO', 'TV', 'WF', 'WS']
     },
+    'RUSSIA': {
+        'countries': ['AM', 'AZ', 'BY', 'EE', 'GE', 'KZ', 'KG', 'LV', 'LT', 'MD', 'RU', 'SU', 'TJ', 'TM', 'UA', 'UZ']
+    },
     'SAHEL': {
         'countries': ['BF', 'TD', 'GM', 'ML', 'MR', 'NE', 'NG', 'SN', 'SD']
     },
