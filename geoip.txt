@@ -6,6 +6,7 @@ Use these tags in your blocklists or policy files.
 Syntax:
   @@TAG  - Blocks on BOTH query (ccTLD) and answer (IP)
   @TAG   - Blocks ONLY on query (ccTLD)
+  @AS###  - Blocks on ASN (answer IP only)
 
 ------------------------------------------------------------------------------------------
  CONTINENTS
@@ -594,3 +595,10 @@ YT     | @@YT           | @YT            | AF         | Mayotte
 ZA     | @@ZA           | @ZA            | AF         | South Africa                  
 ZM     | @@ZM           | @ZM            | AF         | Zambia                        
 ZW     | @@ZW           | @ZW            | AF         | Zimbabwe                      
+
+------------------------------------------------------------------------------------------
+ ASN (Autonomous System Numbers)
+------------------------------------------------------------------------------------------
+Syntax: @AS<number> (e.g., @AS13335 for Cloudflare)
+ASN rules block based on IP address ownership/routing.
+Use --export-asn to generate a full ASN list from your database.

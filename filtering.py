@@ -2,10 +2,10 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 8.0.0 (Optimized - Hard IntervalTree Requirement)
+# Version: 9.0.0 (ASN Support Added)
 # -----------------------------------------------------------------------------
 """
-Filtering Engine with consolidated action handling and optimizations.
+Filtering Engine with ASN support, consolidated action handling and optimizations.
 """
 
 import sys
@@ -142,7 +142,8 @@ class RuleEngine:
             'domain': DomainTrie(),
             'regex': [],
             'ip': IntervalTree(),
-            'geoip': defaultdict(lambda: {'BLOCK': [], 'DROP': []})
+            'geoip': defaultdict(lambda: {'BLOCK': [], 'DROP': []}),
+            'asn': defaultdict(lambda: {'BLOCK': [], 'DROP': []})
         }
         
         self.allowed_types = set()
@@ -192,12 +193,12 @@ class RuleEngine:
         Add rule with specified action.
         
         Args:
-            rule_text: Rule string (domain, IP, regex, geoip tag)
+            rule_text: Rule string (domain, IP, regex, geoip tag, asn)
             action: 'ALLOW', 'BLOCK', or 'DROP'
             list_name: Source list name for logging
             
         Returns:
-            Rule type: "domain", "regex", "ip", "cidr", "geoip", or "ignored"
+            Rule type: "domain", "regex", "ip", "cidr", "geoip", "asn", or "ignored"
         """
         rule_text = rule_text.strip()
         if not rule_text or rule_text.startswith('#'): 
@@ -228,6 +229,30 @@ class RuleEngine:
                 f"List: '{list_name}'"
             )
             return "geoip"
+        
+        elif rule_text.startswith('@AS'):
+            # ASN Rules (Answer-only for IP-based ASN)
+            asn_spec = rule_text[1:].upper()  # Remove @ prefix, keep AS prefix
+            
+            # Normalize: @13335 -> AS13335, @AS13335 -> AS13335
+            if not asn_spec.startswith('AS'):
+                asn_spec = 'AS' + asn_spec
+            
+            data = (rule_text, list_name)
+            
+            if action == 'ALLOW':
+                logger.warning(f"ASN ALLOW not supported: {rule_text} | List: '{list_name}'")
+                return "ignored"
+            
+            self.answer_rules['asn'][asn_spec][action].append(data)
+            
+            logger.info(
+                f"✓ Added ASN rule: {rule_text} | "
+                f"ASN: {asn_spec} | "
+                f"Action: {action} | "
+                f"List: '{list_name}'"
+            )
+            return "asn"
         
         elif rule_text.startswith('@') and not rule_text.startswith('@@'):
             # QUERY ONLY (ccTLD-based)
@@ -370,7 +395,7 @@ class RuleEngine:
         
         Args:
             qname_norm: Normalized query name (for domain blocking)
-            ip_str: IP address string (for IP blocking)
+            ip_str: IP address string (for IP/ASN blocking)
             geoip_lookup: GeoIPLookup instance
             domain_hint: Domain name for CCTLD hint in IP lookup
             
@@ -378,7 +403,26 @@ class RuleEngine:
             (action, rule, list_name)
         """
         
-        # 1. GeoIP Checks (IP-based)
+        # 1. ASN Checks (highest priority for IP-based)
+        if ip_str and geoip_lookup and geoip_lookup.enabled:
+            asn_data = geoip_lookup.lookup_asn(ip_str)
+            
+            if asn_data and 'asn' in asn_data:
+                asn = asn_data['asn'].upper()
+                as_name = asn_data.get('as_name', 'Unknown')
+                
+                for action in ['DROP', 'BLOCK']:
+                    if asn in self.answer_rules['asn']:
+                        if self.answer_rules['asn'][asn][action]:
+                            rule, list_name = self.answer_rules['asn'][asn][action][0]
+                            logger.info(
+                                f"{'🔇' if action == 'DROP' else '⛔'} ASN {action} | "
+                                f"IP: {ip_str} | ASN: {asn} | Holder: {as_name} | "
+                                f"Rule: '{rule}' | List: '{list_name}'"
+                            )
+                            return action, rule, list_name
+        
+        # 2. GeoIP Checks (IP-based)
         applicable_locations = set()
         trigger_info = None
 
@@ -417,7 +461,7 @@ class RuleEngine:
                             )
                             return action, rule, list_name
         
-        # 2. IP Checks (IntervalTree)
+        # 3. IP Checks (IntervalTree)
         if ip_str:
             try:
                 ip_obj = ipaddress.ip_address(ip_str)
@@ -430,7 +474,7 @@ class RuleEngine:
             except ValueError: 
                 pass 
         
-        # 3. Domain Checks
+        # 4. Domain Checks
         if qname_norm:
             # Regex (check DROP first, then BLOCK)
             for pattern, action, rule, list_name in self.answer_rules['regex']:
@@ -454,6 +498,7 @@ class RuleEngine:
     def has_answer_only_rules(self):
         return bool(
             any(self.answer_rules['geoip'].values()) or
+            any(self.answer_rules['asn'].values()) or
             len(self.answer_rules['ip']) > 0 or
             self.answer_rules['domain'].root or
             self.answer_rules['regex']
@@ -466,6 +511,10 @@ class RuleEngine:
         answer_block_geo = sum(len(self.answer_rules['geoip'][loc]['BLOCK']) for loc in self.answer_rules['geoip'])
         answer_drop_geo = sum(len(self.answer_rules['geoip'][loc]['DROP']) for loc in self.answer_rules['geoip'])
         
+        # Count ASN rules
+        answer_block_asn = sum(len(self.answer_rules['asn'][asn]['BLOCK']) for asn in self.answer_rules['asn'])
+        answer_drop_asn = sum(len(self.answer_rules['asn'][asn]['DROP']) for asn in self.answer_rules['asn'])
+        
         return {
             'allow_domains': len(self.query_rules['domain'].root),
             'block_domains': len(self.query_rules['domain'].root),
@@ -474,7 +523,8 @@ class RuleEngine:
             'query_drop_geo': query_drop_geo,
             'answer_block_geo': answer_block_geo,
             'answer_drop_geo': answer_drop_geo,
+            'answer_block_asn': answer_block_asn,
+            'answer_drop_asn': answer_drop_asn,
             'answer_ips': len(self.answer_rules['ip']),
         }
-
 

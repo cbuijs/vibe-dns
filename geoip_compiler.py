@@ -2,14 +2,11 @@
 # filename: geoip_compiler.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 7.2.1 (Query-only GeoIP Documentation)
+# Version: 8.1.0 (ASN Support with Validation)
 # -----------------------------------------------------------------------------
 """
-Unified compiler for GeoIP databases.
+Unified compiler for GeoIP databases with ASN support and validation.
 Compiles MMDB OR JSON + GeoNames into a memory-mappable binary format.
-
-Changes:
-- Documentation now explains @ vs @@ syntax
 """
 
 import urllib.request
@@ -160,7 +157,8 @@ class GeoNamesCompiler:
             f.write("Use these tags in your blocklists or policy files.\n")
             f.write("Syntax:\n")
             f.write("  @@TAG  - Blocks on BOTH query (ccTLD) and answer (IP)\n")
-            f.write("  @TAG   - Blocks ONLY on query (ccTLD)\n\n")
+            f.write("  @TAG   - Blocks ONLY on query (ccTLD)\n")
+            f.write("  @AS###  - Blocks on ASN (answer IP only)\n\n")
             
             # Continents
             f.write("-" * 90 + "\n")
@@ -202,6 +200,14 @@ class GeoNamesCompiler:
                 cont = data.get('continent', 'XX')
                 name = data.get('name', 'Unknown')
                 f.write(f"{iso2:<7}| @@{iso2:<13}| @{iso2:<14}| {cont:<11}| {name:<30}\n")
+            
+            # ASN note
+            f.write("\n" + "-" * 90 + "\n")
+            f.write(" ASN (Autonomous System Numbers)\n")
+            f.write("-" * 90 + "\n")
+            f.write("Syntax: @AS<number> (e.g., @AS13335 for Cloudflare)\n")
+            f.write("ASN rules block based on IP address ownership/routing.\n")
+            f.write("Use --export-asn to generate a full ASN list from your database.\n")
         
         logger.info(f"✓ Rules reference exported to {filename}")
 
@@ -251,7 +257,26 @@ class UnifiedGeoIPCompiler:
                     network = record.get('network')
                     if not network: 
                         continue
-                    self.ip_ranges[network] = {
+                    
+                    # Extract ASN data with validation
+                    asn_value = record.get('asn')
+                    as_name = record.get('as_name')
+                    
+                    # Validate ASN format
+                    valid_asn = None
+                    valid_as_name = None
+                    
+                    if asn_value:
+                        if isinstance(asn_value, int):
+                            valid_asn = f"AS{asn_value}"
+                            valid_as_name = as_name if as_name else None
+                        elif isinstance(asn_value, str):
+                            asn_str = asn_value.strip().upper()
+                            if asn_str.startswith('AS') and asn_str[2:].isdigit():
+                                valid_asn = asn_str
+                                valid_as_name = as_name if as_name else None
+                    
+                    entry = {
                         'country': record.get('country_code'),
                         'country_name': record.get('country'),
                         'city': record.get('city'),
@@ -259,7 +284,16 @@ class UnifiedGeoIPCompiler:
                         'region_code': record.get('region_code'),
                         'continent': record.get('continent_code'),
                     }
+                    
+                    # Only add ASN if valid
+                    if valid_asn:
+                        entry['asn'] = valid_asn
+                        if valid_as_name:
+                            entry['as_name'] = valid_as_name
+                    
+                    self.ip_ranges[network] = entry
                     count += 1
+                    
                     if count % 100000 == 0:
                         now = time.time()
                         if now - last_log > 1.0:
@@ -321,13 +355,37 @@ class UnifiedGeoIPCompiler:
         if 'continent' in data:
             continent = data['continent'].get('code')
 
-        if country:
-            self.ip_ranges[cidr] = {
+        # Extract and validate ASN data
+        asn_num = None
+        as_name = None
+        
+        if 'autonomous_system_number' in data:
+            asn_raw = data['autonomous_system_number']
+            # Validate it's actually a number
+            if isinstance(asn_raw, int) and asn_raw > 0:
+                asn_num = f"AS{asn_raw}"
+                
+        if 'autonomous_system_organization' in data and asn_num:
+            # Only store AS name if we have a valid ASN
+            as_name = data['autonomous_system_organization']
+
+        # Only create entry if we have country or valid ASN
+        if country or asn_num:
+            entry = {
                 'country': country,
-                'country_name': self.country_names.get(country, country),
+                'country_name': self.country_names.get(country, country) if country else None,
                 'region_code': region_code,
                 'continent': continent
             }
+            
+            # Add ASN data only if validated
+            if asn_num:
+                entry['asn'] = asn_num
+                if as_name:
+                    entry['as_name'] = as_name
+            
+            # Remove None values
+            self.ip_ranges[cidr] = {k: v for k, v in entry.items() if v is not None}
 
     def _compute_regions_cached(self, info):
         key = (
@@ -382,6 +440,7 @@ class UnifiedGeoIPCompiler:
         logger.info(f"  💾 Processing {len(self.ip_ranges)} ranges for binary output...")
         ipv4_list, ipv6_list = [], []
         count = 0
+        asn_count = 0
         last_log = time.time()
         
         for cidr, info in self.ip_ranges.items():
@@ -418,6 +477,16 @@ class UnifiedGeoIPCompiler:
                 'regions': regions,
                 'region_code': info.get('region_code')
             }
+            
+            # Only add ASN if it exists and is in correct format
+            if 'asn' in info:
+                asn_value = info['asn']
+                if asn_value and isinstance(asn_value, str) and asn_value.startswith('AS'):
+                    clean_info['asn'] = asn_value
+                    asn_count += 1
+                    if 'as_name' in info:
+                        clean_info['as_name'] = info['as_name']
+            
             # Remove None values
             clean_info = {k: v for k, v in clean_info.items() if v is not None}
             
@@ -427,6 +496,7 @@ class UnifiedGeoIPCompiler:
                 ipv6_list.append((start, end, clean_info))
         
         sys.stdout.write(f"\r     Processing record {count:,}/{len(self.ip_ranges):,}... Done.\n")
+        logger.info(f"     Found {asn_count} ranges with valid ASN data")
         logger.info("     Sorting IP ranges...")
         ipv4_list.sort(key=lambda x: x[0])
         ipv6_list.sort(key=lambda x: x[0])
@@ -471,6 +541,23 @@ class UnifiedGeoIPCompiler:
         size_mb = os.path.getsize(output_path) / (1024*1024)
         logger.info(f"  ✓ Finished! Database size: {size_mb:.2f} MB")
 
+    def export_asn_tsv(self, output_path: str):
+        """Export ASN data in IPASN format: CIDR<TAB>ASN<TAB>AS-NAME"""
+        logger.info(f"📝 Exporting ASN data to {output_path}")
+        count = 0
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for cidr, info in sorted(self.ip_ranges.items()):
+                # Only export if ASN is present and in correct format
+                if 'asn' in info:
+                    asn_value = info['asn']
+                    if asn_value and isinstance(asn_value, str) and asn_value.startswith('AS'):
+                        as_name = info.get('as_name', '')
+                        f.write(f"{cidr}\t{asn_value}\t{as_name}\n")
+                        count += 1
+        
+        logger.info(f"✓ Exported {count} ASN entries (validated AS<num> format)")
+
     def compile(self, output_path: str = "geoip.vibe"):
         self.extract()
         self._save_binary(output_path)
@@ -483,6 +570,7 @@ def main():
     parser.add_argument("--unified-output", default="geoip.vibe", help="Output file path")
     parser.add_argument("--skip-geonames", action="store_true", help="Skip downloading GeoNames")
     parser.add_argument("--export-rules", help="Export rule reference to text file")
+    parser.add_argument("--export-asn", help="Export ASN data to TSV file (IPASN format)")
     args = parser.parse_args()
     
     gc = GeoNamesCompiler()
@@ -505,6 +593,9 @@ def main():
     stype = 'mmdb' if args.mmdb else 'json'
     uc = UnifiedGeoIPCompiler(source, stype, gc)
     uc.compile(args.unified_output)
+    
+    if args.export_asn:
+        uc.export_asn_tsv(args.export_asn)
 
 if __name__ == "__main__":
     main()

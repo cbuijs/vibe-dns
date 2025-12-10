@@ -2,11 +2,12 @@
 # filename: geoip.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 5.2.0 (Decoupled ccTLD Logic)
+# Version: 6.2.0 (Trust Compiled Database - No Runtime Validation)
 # -----------------------------------------------------------------------------
 """
-High-performance GeoIP lookup module.
+High-performance GeoIP lookup module with ASN support.
 Uses memory-mapped binary files with O(log n) binary search.
+Trusts pre-validated compiled database.
 """
 
 import mmap
@@ -47,7 +48,7 @@ class GeoIPLookup:
             self.f = open(db_path, 'rb')
             self.mm = mmap.mmap(self.f.fileno(), 0, access=mmap.ACCESS_READ)
             
-            # Parse Header (First 26 bytes used, padding ignored)
+            # Parse Header
             header = struct.unpack_from('!4sHIIIII', self.mm, 0)
             
             if header[0] != b'VIBE':
@@ -61,11 +62,7 @@ class GeoIPLookup:
             self.data_offset = header[6]
             
             self.enabled = True
-            
             self.cctld_mode = geoip_cfg.get('cctld_mode', 'geoip_only')
-            
-            # ALWAYS enable mapper so it can be used for Query Blocking (ccTLD logic)
-            # The cctld_mode only controls if it's used for IP hints.
             self.cctld_mapper = CCTLDMapper(enabled=True)
             
             logger.info(f"GeoIP: ENABLED (Version {self.version})")
@@ -79,6 +76,7 @@ class GeoIPLookup:
             self.close()
 
     def lookup(self, ip_str: str) -> Optional[dict]:
+        """Lookup GeoIP data - returns raw data from compiled database"""
         if not self.enabled: return None
         try:
             ip = ipaddress.ip_address(ip_str)
@@ -123,6 +121,7 @@ class GeoIPLookup:
         return None
 
     def _read_data(self, ptr: int) -> dict:
+        """Read and deserialize JSON data - trust it's valid"""
         abs_offset = self.data_offset + ptr
         length = struct.unpack_from('!H', self.mm, abs_offset)[0]
         json_bytes = self.mm[abs_offset+2 : abs_offset+2+length]
@@ -131,15 +130,26 @@ class GeoIPLookup:
         except json.JSONDecodeError:
             return {}
 
+    def lookup_asn(self, ip_str: str) -> Optional[dict]:
+        """Lookup ASN - returns raw ASN data from database"""
+        if not self.enabled: return None
+        result = self.lookup(ip_str)
+        if not result: return None
+        
+        # Return ASN fields if present (compiler guarantees validity)
+        asn_data = {}
+        if 'asn' in result: 
+            asn_data['asn'] = result['asn']
+        if 'as_name' in result:
+            asn_data['as_name'] = result['as_name']
+        
+        return asn_data if asn_data else None
+
     def lookup_with_domain_hint(self, ip_str: str, domain: str = None) -> Tuple[Optional[dict], Optional[str]]:
-        """
-        Lookup IP with optional domain hint.
-        Respects cctld_mode config.
-        """
+        """Lookup IP with optional ccTLD domain hint"""
         geo = self.lookup(ip_str)
         cctld = None
         
-        # Only perform TLD->Country hint if mode is enabled
         if self.cctld_mode != 'geoip_only':
             if domain and self.cctld_mapper.enabled:
                 cctld = self.cctld_mapper.get_country_from_domain(domain)
@@ -147,10 +157,17 @@ class GeoIPLookup:
         return geo, cctld
 
     def match_location(self, ip_str: str, location_spec: str, domain: str = None) -> bool:
+        """Check if IP matches location - trust compiled regions list"""
         geo, cctld = self.lookup_with_domain_hint(ip_str, domain)
+        
         if self.cctld_mode == 'cctld_first' and cctld:
-            if cctld.upper() == location_spec.upper(): return True
-        if not geo: return False
+            if cctld.upper() == location_spec.upper(): 
+                return True
+        
+        if not geo: 
+            return False
+        
+        # Compiler guarantees 'regions' is a valid list
         regions = set(geo.get('regions', []))
         return location_spec.upper() in regions
 
