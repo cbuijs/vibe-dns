@@ -542,21 +542,38 @@ class UnifiedGeoIPCompiler:
         logger.info(f"  ✓ Finished! Database size: {size_mb:.2f} MB")
 
     def export_asn_tsv(self, output_path: str):
-        """Export ASN data in IPASN format: CIDR<TAB>ASN<TAB>AS-NAME"""
+        """Export ASN data in IPASN format: CIDR<TAB>ASN<TAB>AS-NAME (aggregated)"""
         logger.info(f"📝 Exporting ASN data to {output_path}")
+    
+        # Aggregate CIDRs per ASN
+        asn_data = defaultdict(lambda: {'cidrs': [], 'as_name': ''})
+    
+        for cidr, info in self.ip_ranges.items():
+            if 'asn' in info:
+                asn_value = info['asn']
+                if asn_value and isinstance(asn_value, str) and asn_value.startswith('AS'):
+                    # Strip "AS" prefix
+                    asn_num = asn_value[2:]
+                    as_name = info.get('as_name', '')
+                
+                    asn_data[asn_num]['cidrs'].append(cidr)
+                    if as_name and not asn_data[asn_num]['as_name']:
+                        asn_data[asn_num]['as_name'] = as_name
+    
+        # Sort CIDRs within each ASN
+        for asn_num in asn_data:
+            asn_data[asn_num]['cidrs'].sort(key=lambda x: parse_cidr_fast(x)[1])
+    
+        # Write sorted output
         count = 0
-        
         with open(output_path, 'w', encoding='utf-8') as f:
-            for cidr, info in sorted(self.ip_ranges.items()):
-                # Only export if ASN is present and in correct format
-                if 'asn' in info:
-                    asn_value = info['asn']
-                    if asn_value and isinstance(asn_value, str) and asn_value.startswith('AS'):
-                        as_name = info.get('as_name', '')
-                        f.write(f"{cidr}\t{asn_value}\t{as_name}\n")
-                        count += 1
-        
-        logger.info(f"✓ Exported {count} ASN entries (validated AS<num> format)")
+            for asn_num in sorted(asn_data.keys(), key=int):
+                as_name = asn_data[asn_num]['as_name']
+                for cidr in asn_data[asn_num]['cidrs']:
+                    f.write(f"{cidr}\t{asn_num}\t{as_name}\n")
+                    count += 1
+    
+        logger.info(f"✓ Exported {count} entries for {len(asn_data)} unique ASNs")
 
     def compile(self, output_path: str = "geoip.vibe"):
         self.extract()
