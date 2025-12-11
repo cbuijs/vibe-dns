@@ -340,18 +340,8 @@ class RuleEngine:
         # 2. Regex (check in priority order)
         for pattern, action, rule, list_name in self.query_rules['regex']:
             if pattern.search(qname_norm):
-                if action == 'ALLOW':
-                    return "ALLOW", rule, list_name
-        
-        for pattern, action, rule, list_name in self.query_rules['regex']:
-            if pattern.search(qname_norm):
-                if action == 'DROP':
-                    return "DROP", rule, list_name
-        
-        for pattern, action, rule, list_name in self.query_rules['regex']:
-            if pattern.search(qname_norm):
-                if action == 'BLOCK':
-                    return "BLOCK", rule, list_name
+                if action in ['ALLOW', 'DROP', 'BLOCK']:
+                    return action, rule, list_name
         
         # 3. GeoIP Query Blocking (ccTLD check)
         if geoip_lookup and geoip_lookup.cctld_mapper and geoip_lookup.cctld_mapper.enabled:
