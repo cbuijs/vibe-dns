@@ -157,6 +157,28 @@ upstream:
         - url: "https://dns.google:443/dns-query#8.8.4.4"
 
 # =============================================================================
+#  HOW PRIORITY WORKS
+# =============================================================================
+# 
+# - Lower priority value = more preferred
+# - Default priority is 100 (when not specified)
+# - Servers are sorted by (priority, latency) in fastest/failover/loadbalance modes
+# - Within same priority tier, latency determines order
+#
+# Example with these servers:
+#   Server A: priority=10, latency=50ms
+#   Server B: priority=10, latency=30ms  
+#   Server C: priority=50, latency=10ms
+#
+# Sort order: B, A, C
+# (B and A share priority 10, B wins on latency; C has worse priority despite best latency)
+#
+# Use cases:
+# - Prefer local/private DNS over public
+# - Prefer encrypted (DoH/DoT) over plain UDP
+# - Set fallback servers with higher priority numbers
+
+# =============================================================================
 # 5. CACHING
 # found in: cache_stats.py, resolver.py
 # =============================================================================
