@@ -4,14 +4,13 @@ This repository includes an automated build pipeline (`.github/workflows/build.y
 
 ## Supported Platforms
 
-**Linux**
-AMD64 (x86_64) (`vibe-dns-server-linux-amd64`)
-Built on Debian 10 (Buster) for maximum compatibility (glibc 2.28+). Works on Ubuntu 18.04+, RHEL 8+, etc.
-
-**macOS**
-ARM64 (Apple Silicon) (`vibe-dns-server-macos-arm64`)
-Built on macOS 14. Requires Apple Silicon M1-M5.
-
+**Linux**<BR>
+AMD64 (x86_64) (`vibe-dns-server-linux-amd64`)<BR>
+Built on Debian 10 (Buster) for maximum compatibility (glibc 2.28+). Works on Ubuntu 18.04+, RHEL 8+, etc.<BR>
+<BR>
+**macOS**<BR>
+ARM64 (Apple Silicon) (`vibe-dns-server-macos-arm64`).<BR>
+Built on macOS 14. Requires Apple Silicon M1-M5.<BR>
 
 ## Build Artifacts
 
@@ -39,4 +38,4 @@ If you prefer to build the binaries yourself instead of downloading them:
    
    ```
 
-4. Binaries will be located in the `dist/` folder.
+4. Binaries will be located on the [Releases](https://github.com/cbuijs/vibe-dns/releases) page.

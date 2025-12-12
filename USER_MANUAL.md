@@ -48,7 +48,7 @@ Whether you are securing a home network, managing a small office, or isolating I
 
 Vibe-DNS provides standalone executables for Linux (AMD64) and macOS (Apple Silicon). These generally do not require Python to be installed on the system.
 
-1.  Go to the **[Releases](https://github.com/cbuijs/vibe-dns/releases)** page of the repository.
+1.  Go to the [Releases](https://github.com/cbuijs/vibe-dns/releases) page of the repository.
 2.  Download the binary matching your OS (e.g., `vibe-dns-server-linux-amd64`).
 3.  Download the required configuration assets:
     * `config.yaml` (renamed from `full_config.yaml`)
@@ -65,7 +65,7 @@ Requirements: Python 3.11 or higher.
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/cbuijs/vibe-dns.git](https://github.com/cbuijs/vibe-dns.git)
+    git clone https://github.com/cbuijs/vibe-dns.git
     cd vibe-dns
     ```
 
@@ -94,7 +94,7 @@ Vibe-DNS uses a custom high-performance binary format (`.vibe`). You can compile
 **Step 1: Get Source Data**
 Download a free IP-to-Country JSON database (e.g., IPInfo Lite).
 ```bash
-wget "[https://ipinfo.io/data/ipinfo_lite.json.gz?token=](https://ipinfo.io/data/ipinfo_lite.json.gz?token=)<YOUR_TOKEN>" -O - | zcat > ipinfo_lite.json
+wget "https://ipinfo.io/data/ipinfo_lite.json.gz?token=<YOUR_TOKEN>" -O - | zcat > ipinfo_lite.json
 ```
 *(Note: You can sign up for a free token at ipinfo.io)*
 
@@ -167,7 +167,7 @@ upstream:
     # Encrypted DNS for sensitive groups
     Secure:
       servers:
-        - "[https://dns.google:443/dns-query](https://dns.google:443/dns-query)" # DoH
+        - "https://dns.google:443/dns-query" # DoH
         - "tls://1.1.1.1:853"                # DoT
 ```
 
@@ -176,7 +176,7 @@ Define sources for blocklists.
 ```yaml
 lists:
   ad_servers:
-    - source: "[https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts](https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts)"
+    - source: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
   
   my_whitelist:
     - source: "./lists/whitelist.txt"
