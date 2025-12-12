@@ -40,8 +40,8 @@ server:
   #   - "wg0"
   
   # Ports to listen on (List of integers). Standard is 53.
-  port_udp: [53]
-  port_tcp: [53]
+  port_udp: [53, 5353, 53053]
+  port_tcp: [53, 5353, 53053]
   
   # --- EDNS Client Subnet (ECS) Handling ---
   # Enable parsing of ECS data from incoming clients
