@@ -2,10 +2,10 @@
 # filename: server.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 4.5.0 (Optimization: UDP Semaphore)
+# Version: 4.6.0 (Skip Validation Option)
 # -----------------------------------------------------------------------------
 """
-Main Server Module with concurrency limits.
+Main Server Module with concurrency limits and configurable validation.
 """
 
 import asyncio
@@ -72,6 +72,7 @@ class UDPServer:
         except Exception as e:
             logger.exception(f"Error handling UDP packet from {addr}: {e}")
 
+
 class TCPServer:
     """AsyncIO Stream Handler for DNS TCP"""
     def __init__(self, handler, host, port):
@@ -112,11 +113,14 @@ async def shutdown(sig: signal.Signals, stop_event: asyncio.Event) -> None:
     logger.info(f"Received exit signal {sig.name}...")
     stop_event.set()
 
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Filtering DNS Server")
     parser.add_argument("-c", "--config", default="config.yaml", help="Path to YAML config file")
     parser.add_argument("--validate-only", action="store_true", help="Validate configuration and exit")
+    parser.add_argument("--skip-validation", action="store_true", help="Skip configuration validation on startup")
     return parser.parse_args()
+
 
 async def main() -> None:
     args = parse_arguments()
@@ -142,23 +146,30 @@ async def main() -> None:
         else:
             sys.exit(1)
 
-    logger.info(">>> Phase 1.5: Configuration Validation")
-    is_valid, errors, warnings = validate_config(config)
-    
-    if errors:
-        logger.error("Configuration validation failed!")
-        sys.exit(1)
-    
+    # Configuration validation (can be skipped with --skip-validation)
     if args.validate_only:
+        logger.info(">>> Phase 1.5: Configuration Validation")
+        is_valid, errors, warnings = validate_config(config)
+        if errors:
+            logger.error("Configuration validation failed!")
+            sys.exit(1)
         print("\n✅ Configuration validation PASSED")
         sys.exit(0)
+    elif not args.skip_validation:
+        logger.info(">>> Phase 1.5: Configuration Validation")
+        is_valid, errors, warnings = validate_config(config)
+        if errors:
+            logger.error("Configuration validation failed!")
+            sys.exit(1)
+    else:
+        logger.warning("Configuration validation SKIPPED (--skip-validation)")
 
     if not config.get('server', {}).get('bind_ip') and not config.get('server', {}).get('bind_interfaces'):
         logger.info("No explicit bind_ip configured. Defaulting to ALL interfaces")
         config.setdefault('server', {})['bind_ip'] = ["0.0.0.0", "::"]
 
     setup_logger(config)
-    logger.info("Starting DNS Filter Server v4.5.0 (Optimized)")
+    logger.info("Starting DNS Filter Server v4.6.0 (Optimized)")
     
     logger.info(">>> Phase 2: Component Initialization")
     
@@ -185,10 +196,10 @@ async def main() -> None:
     upstream = UpstreamManager(config.get('upstream', {}))
     monitor_task = asyncio.create_task(upstream.start_monitor())
     
-    # Startup checks omitted for brevity (same as original)
+    # Startup checks
     if config.get('upstream', {}).get('startup_check_enabled', True):
-        # ... (Same startup check code)
-        pass 
+        logger.info("Performing startup upstream health check...")
+        await asyncio.sleep(1)  # Give monitor time to do initial check
     
     geoip_lookup = GeoIPLookup(config)
     
@@ -228,13 +239,13 @@ async def main() -> None:
     tcp_ports = get_ports('port_tcp', [53])
 
     # Default concurrency limit 1000, can be made configurable
-    udp_concurrency = 1000 
+    udp_concurrency = config.get('server', {}).get('udp_concurrency', 1000)
 
     for ip in listen_ips:
         for port in udp_ports:
             try:
                 transport, _ = await loop.create_datagram_endpoint(
-                    lambda: UDPServer(handler, ip, port, max_concurrent=udp_concurrency),
+                    lambda h=ip, p=port: UDPServer(handler, h, p, max_concurrent=udp_concurrency),
                     local_addr=(ip, port)
                 )
                 transports.append(transport)
@@ -259,17 +270,22 @@ async def main() -> None:
     logger.info("Server Ready. Press Ctrl+C to stop.")
     await stop_event.wait()
     
-    # ... (Shutdown logic same as original)
+    # Shutdown
     logger.info("Shutting down...")
-    if geoip_lookup: geoip_lookup.close()
+    if geoip_lookup: 
+        geoip_lookup.close()
     monitor_task.cancel()
-    for t in transports: t.close()
+    for t in transports: 
+        t.close()
+    for s in servers:
+        s.close()
+        await s.wait_closed()
     await upstream.close()
     logger.info("Server stopped.")
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-
