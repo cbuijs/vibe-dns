@@ -221,6 +221,7 @@ class ListManager:
             try:
                 ipaddress.ip_address(domain)
                 continue  # Skip IPs in domain column
+                valid_rules.add(domain)
             except ValueError:
                 pass  # Not an IP, continue
             

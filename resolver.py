@@ -2,7 +2,7 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 7.4.0 (Fix: ECS String Conversion & Error Logging)
+# Version: 7.4.1 (Fix: Respect Explicit Allow Rules)
 # -----------------------------------------------------------------------------
 """
 Core DNS Resolution with consolidated EDNS processing and optimizations.
@@ -679,6 +679,9 @@ class DNSHandler:
         # Retrieve active policy AND the reason for its selection (fix for generic 'Schedule Policy' log)
         policy_name, policy_source = self.get_active_policy(group, req_logger)
         
+        # Track if this query was explicitly allowed (to bypass later answer checks)
+        is_explicit_allow = False
+
         cached_decision = self.decision_cache.get_decision(qname_norm, qtype, group_key, policy_name)
         if cached_decision:
             action = cached_decision['action']
@@ -691,6 +694,7 @@ class DNSHandler:
                 req_logger.info(f"⛔ BLOCKED (Decision Cache Hit) | Reason: {reason} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'{f' | Category: {category}' if category else ''}")
                 return self.create_block_response(request, qname, qtype).to_wire()
             elif action == 'ALLOW':
+                is_explicit_allow = True
                 req_logger.info(f"✓ ALLOWED (Decision Cache Hit) | Reason: {reason} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'{f' | Category: {category}' if category else ''}")
             elif action == 'DROP':
                 req_logger.info(f"🔇 DROPPED (Decision Cache Hit) | Reason: {reason} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
@@ -706,7 +710,7 @@ class DNSHandler:
             
             if self.cache.should_prefetch(cache_key, ttl_remain):
                 req_logger.debug(f"Prefetching {qname_norm} (Hits: {hits})")
-                asyncio.create_task(self._resolve_upstream(qname_norm, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key))
+                asyncio.create_task(self._resolve_upstream(qname_norm, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key, is_explicit_allow))
             
             self.round_robin_answers(cached_msg, req_logger)
             self._log_response(cached_msg, req_logger)
@@ -736,6 +740,7 @@ class DNSHandler:
             return None
         elif policy_name == "ALLOW":
             req_logger.info(f"✓ ALLOWED | Reason: {policy_source} | Group: {group_key} | Policy: ALLOW")
+            is_explicit_allow = True
             decision = {'action': 'ALLOW', 'reason': policy_source, 'rule': 'N/A', 'list': policy_source, 'category': ''}
             self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
 
@@ -768,6 +773,7 @@ class DNSHandler:
                              elif action == 'ALLOW':
                                  req_logger.info(f"✓ ALLOWED | Reason: Category Match | Category: '{cat}' | Confidence: {score}% | Policy: '{policy_name}'")
                                  matched_category = f"{cat} ({score}%)"
+                                 is_explicit_allow = True
                                  decision = {'action': 'ALLOW', 'reason': 'Category Match', 'rule': f"Category: {cat}", 'list': policy_name, 'category': matched_category}
                                  self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
                              elif action == 'DROP':
@@ -799,6 +805,7 @@ class DNSHandler:
                 return self.create_block_response(request, qname, qtype).to_wire()
             elif action == "ALLOW":
                 req_logger.info(f"✓ ALLOWED | Reason: Domain Allowlist | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
+                is_explicit_allow = True
                 decision = {'action': 'ALLOW', 'reason': 'Domain Allowlist', 'rule': rule, 'list': list_name, 'category': ''}
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, decision)
             elif action == "DROP":
@@ -809,7 +816,7 @@ class DNSHandler:
 
         dedup_key = (qname_norm, qtype, policy_name, group_key)
         final_msg = await self.deduplicator.get_or_process(dedup_key, 
-            lambda: self._resolve_upstream(qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key))
+            lambda: self._resolve_upstream(qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key, is_explicit_allow))
         
         if final_msg is None:
             return None
@@ -821,7 +828,7 @@ class DNSHandler:
         self._log_response(final_msg, req_logger)
         return final_msg.to_wire()
 
-    async def _resolve_upstream(self, qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default"):
+    async def _resolve_upstream(self, qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default", is_explicit_allow=False):
         upstream_group = "Default"
         policies = self.config.get('policies') or {}
         if policy_name in policies:
@@ -932,7 +939,8 @@ class DNSHandler:
              reply.set_rcode(dns.rcode.SERVFAIL)
              return reply
         
-        if engine and (self.match_answers_globally or engine.has_answer_only_rules()):
+        # Only check answers if we have NOT explicitly allowed this query
+        if not is_explicit_allow and engine and (self.match_answers_globally or engine.has_answer_only_rules()):
             matched_action = None
             matched_rule = None
             matched_list = None
