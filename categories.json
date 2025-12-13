@@ -1,17 +1,17 @@
 {
   "ads": {
     "keywords": [
-      "2o7", "ad", "adclick", "adnetwork", "adsrvr", "adserver", "adservice",
-      "adsystem", "adtech", "advert", "advertising", "banner", "click", 
-      "doubleclick", "marketing", "popunder", "popup", "telemetry"
+      "2o7", "ad", "adclick", "adnetwork", "ads", "adsrvr", "adserver", "adservice",
+      "adsrv", "adsystem", "adtech", "advert", "advertising", "banner", "click", 
+      "doubleclick", "marketing", "pagead", "pixel", "popunder", "popup", "telemetry"
     ],
     "regex": [
-      "/(^|\\.)ad[s]?-[0-9a-z-]+\\./",
-      "/(^|\\.)banner[s]?-[0-9]+\\./",
-      "/(^|\\.)popup-[0-9]+\\./",
-      "/(^|\\.)telemetry-[a-z0-9]+\\./",
-      "/(^|\\.)pixel-[a-z0-9]+\\./",
-      "/(^|\\.)track(er|ing)?-[a-z0-9]+\\./"
+      "/(^|\\.)ad[sz]?-?[0-9a-z-]+\\./",
+      "/(^|\\.)banner[siz]?-?[0-9]+\\./",
+      "/(^|\\.)pop(under|up)-?[0-9]+\\./",
+      "/(^|\\.)telemetry-?[a-z0-9]+\\./",
+      "/(^|\\.)pixel-?[a-z0-9]+\\./",
+      "/(^|\\.)track(er|ing)?-?[a-z0-9]+\\./"
     ],
     "tlds": [
       "ad", "ads", "agency", "click", "deals", "design", "digital", "link", 
@@ -63,15 +63,15 @@
   },
   "file_sharing": {
     "keywords": [
-      "cloud", "crack", "download", "file", "host", "leech", "magnet", 
-      "mega", "mirror", "p2p", "seed", "share", "storage", "torrent", 
-      "transfer", "upload", "warez"
+      "bin", "box", "cloud", "crack", "download", "drive", "dropbox", "file", "git", "host", "icloud", "lab", "leech", "magnet", 
+      "mega", "mirror", "onedrive", "paste", "p2p", "seed", "share", "storage", "torrent", 
+      "transfer", "upload", "warez", "zip"
     ],
     "regex": [
       "/(^|\\.)file-share-[0-9]+\\./",
       "/(^|\\.)download-[a-z0-9]+\\./"
     ],
-    "tlds": ["download", "file", "storage"]
+    "tlds": ["download", "file", "storage", "zip"]
   },
   "gambling": {
     "keywords": [
@@ -93,8 +93,8 @@
   },
   "games": {
     "keywords": [
-      "arcade", "console", "esports", "game", "gamer", "gaming", "guild", 
-      "minecraft", "multiplayer", "nintendo", "play", "playstation", "rpg", 
+      "arcade", "console", "esports", "game", "gamer", "games", "gaming", "guild", 
+      "minecraft", "multiplayer", "nintendo", "play", "playstation", "poki", "roblox", "rpg", 
       "steam", "xbox"
     ],
     "regex": [
@@ -106,9 +106,9 @@
   },
   "government": {
     "keywords": [
-      "administration", "agency", "authority", "bureau", "council", 
-      "department", "embassy", "federal", "gov", "govt", "ministry", 
-      "municipality", "parliament", "state"
+      "administration", "agency", "authority", "bureau", "cia", "council", 
+      "department", "dhs", "dod", "embassy", "federal", "fbi", "gemeente", "gov", "govt", "ice", "interpol", "ministry", 
+      "municipality", "nato", "nsa", "parliament", "state"
     ],
     "regex": [
       "/(^|\\.)gov-[a-z]+\\./",
@@ -227,7 +227,7 @@
       "/(^|\\.)url-[0-9]+\\./",
       "/(^|\\.)redir(ect)?-[0-9]+\\./"
     ],
-    "tlds": ["cf", "click", "gq", "link", "ml", "tk", "top", "xyz"]
+    "tlds": ["cf", "click", "gl", "gq", "link", "ly", "ml", "tk", "top", "xyz"]
   },
   "scam": {
     "keywords": [
@@ -293,8 +293,8 @@
   },
   "webmail": {
     "keywords": [
-      "email", "hotmail", "imap", "inbox", "login", "mail", "outlook", 
-      "pop", "signin", "smtp", "webmail"
+      "email", "gmail", "hotmail", "imap", "imaps", "imap4", "inbox", "login", "mail", "outlook", 
+      "pop", "pop3", "signin", "smtp", "yahoo", "webmail"
     ],
     "regex": [
       "/(^|\\.)webmail-[a-z0-9]+\\./",
