@@ -64,6 +64,7 @@ class ConfigValidator:
         self._validate_policies(config.get('policies', {}), config.get('lists', {}), config.get('upstream', {}))
         self._validate_assignments(config.get('assignments', {}), config.get('policies', {}), config.get('schedules', {}), config.get('groups', {}))
         self._validate_top_level_options(config)
+        self._validate_heuristics(config.get('heuristics', {}))
 
         is_valid = len(self.errors) == 0
 
@@ -914,6 +915,31 @@ class ConfigValidator:
         if list_refresh is not None:
             if not isinstance(list_refresh, (int, float)) or list_refresh < 1:
                 self.errors.append(f"list_refresh_interval: Must be number >= 1, got {list_refresh}")
+
+    def _validate_heuristics(self, heur_cfg: Dict[str, Any]):
+        """Validate heuristics configuration"""
+        if not isinstance(heur_cfg, dict):
+            if heur_cfg is not None:
+                self.errors.append("heuristics: Must be a dictionary")
+            return
+
+        enabled = heur_cfg.get('enabled')
+        if enabled is not None and not isinstance(enabled, bool):
+            self.errors.append("heuristics.enabled: Must be boolean")
+
+        threshold = heur_cfg.get('block_threshold')
+        if threshold is not None:
+            if not isinstance(threshold, int) or not (1 <= threshold <= 5):
+                self.errors.append(f"heuristics.block_threshold: Must be integer between 1 and 5, got {threshold}")
+
+        # NEW: Validate typosquat file
+        ts_file = heur_cfg.get('typosquat_file')
+        if ts_file:
+            if not isinstance(ts_file, str):
+                self.errors.append("heuristics.typosquat_file: Must be a string")
+            elif heur_cfg.get('enabled', False) and not os.path.isfile(ts_file):
+                self.warnings.append(f"heuristics.typosquat_file: File '{ts_file}' not found. Using defaults only.")
+
 
 
 def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:

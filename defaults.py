@@ -72,6 +72,11 @@ DEFAULT_CONFIG = {
     'filtering': {
         'ptr_check': 'none'
     },
+    'heuristics': {
+        'enabled': False,
+        'block_threshold': 4,
+        'typosquat_file': 'typosquat_targets.list'
+    },
     'logging': {
         'level': 'INFO',
         'enable_console': True,

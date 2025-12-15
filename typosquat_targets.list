@@ -1,0 +1,122 @@
+# ==============================================================================
+# Vibe-DNS Typosquatting Targets
+# ==============================================================================
+# This list is used by the Heuristics engine to detect look-alike domains.
+# Add high-value targets here (one per line).
+# ==============================================================================
+
+# --- Search & Tech Giants ---
+google
+youtube
+facebook
+amazon
+apple
+microsoft
+bing
+yahoo
+duckduckgo
+baidu
+yandex
+openai
+chatgpt
+
+# --- Social Media ---
+twitter
+x.com
+instagram
+linkedin
+tiktok
+snapchat
+pinterest
+reddit
+whatsapp
+telegram
+discord
+messenger
+skype
+zoom
+slack
+teams
+
+# --- Cloud & Services ---
+dropbox
+box
+icloud
+onedrive
+googlecloud
+aws
+azure
+github
+gitlab
+bitbucket
+atlassian
+trello
+asana
+salesforce
+shopify
+wordpress
+adobe
+
+# --- Streaming ---
+netflix
+spotify
+hulu
+twitch
+disneyplus
+primevideo
+hbo
+roblox
+steam
+playstation
+xbox
+
+# --- Financial & Banking ---
+paypal
+stripe
+square
+coinbase
+binance
+blockchain
+kraken
+wellsfargo
+chase
+citibank
+bankofamerica
+americanexpress
+capitalone
+schwab
+fidelity
+robinhood
+revolut
+wise
+transferwise
+venmo
+cashapp
+westernunion
+
+# --- Email & Communication ---
+gmail
+outlook
+hotmail
+protonmail
+aol
+zoho
+
+# --- E-Commerce & Delivery ---
+ebay
+walmart
+target
+bestbuy
+etsy
+aliexpress
+alibaba
+fedex
+ups
+dhl
+usps
+uber
+lyft
+airbnb
+booking
+expedia
+

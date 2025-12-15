@@ -191,7 +191,7 @@ async def main() -> None:
     
     rule_engines = {}
     for pol_name, pol_cfg in config.get('policies', {}).items():
-        rule_engines[pol_name] = list_manager.compile_policy(pol_name, pol_cfg)
+        rule_engines[pol_name] = list_manager.compile_policy(pol_name, pol_cfg, global_config=config)
 
     upstream = UpstreamManager(config.get('upstream', {}))
     monitor_task = asyncio.create_task(upstream.start_monitor())

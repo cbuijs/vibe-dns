@@ -161,28 +161,6 @@ upstream:
         - url: "https://dns.google:443/dns-query#8.8.4.4"
 
 # =============================================================================
-#  HOW PRIORITY WORKS
-# =============================================================================
-# 
-# - Lower priority value = more preferred
-# - Default priority is 100 (when not specified)
-# - Servers are sorted by (priority, latency) in fastest/failover/loadbalance modes
-# - Within same priority tier, latency determines order
-#
-# Example with these servers:
-#   Server A: priority=10, latency=50ms
-#   Server B: priority=10, latency=30ms  
-#   Server C: priority=50, latency=10ms
-#
-# Sort order: B, A, C
-# (B and A share priority 10, B wins on latency; C has worse priority despite best latency)
-#
-# Use cases:
-# - Prefer local/private DNS over public
-# - Prefer encrypted (DoH/DoT) over plain UDP
-# - Set fallback servers with higher priority numbers
-
-# =============================================================================
 # 5. CACHING
 # found in: cache_stats.py, resolver.py
 # =============================================================================
@@ -285,7 +263,7 @@ response:
 
 # =============================================================================
 # 8. FILTERING & CATEGORIZATION
-# found in: filtering.py
+# found in: filtering.py, heuristics.py
 # =============================================================================
 categorization_enabled: true
 categories_file: "categories.json"
@@ -295,6 +273,21 @@ filtering:
   # - strict: Validate that PTR query names are valid IP-address reversals (in-addr.arpa/ip6.arpa). Block if invalid.
   # - none:   No validation (Default).
   ptr_check: "none"
+
+# --- Heuristics Engine (New) ---
+heuristics:
+  # Enable advanced heuristic analysis for suspicious domains
+  enabled: true
+  
+  # Score threshold to block a domain (1-5)
+  # 1 = Slightly suspicious, 5 = Extremely suspicious
+  # Recommended: 4
+  block_threshold: 4
+  
+  # File containing high-value targets for typosquatting checks
+  # Looks for domains that are 1 character edit away from these targets.
+  # If file not found, uses built-in defaults.
+  typosquat_file: "typosquat_targets.txt"
 
 # =============================================================================
 # 9. CLIENT GROUPS
@@ -386,7 +379,7 @@ lists:
 # If a rule exists in both an allowed list and a blocked list, ALLOW wins.
 #
 # PROCESSING FLOW:
-# 1. Query Analysis: Domain -> GeoIP/ccTLD -> Regex
+# 1. Query Analysis: Domain -> GeoIP/ccTLD -> Regex -> Heuristics
 #    (If Query is allowed explicitly, Upstream processing occurs without Answer checks)
 #
 # 2. Upstream Resolution

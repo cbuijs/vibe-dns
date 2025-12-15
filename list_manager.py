@@ -2,7 +2,7 @@
 # filename: list_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 5.3.2 (Fix Type Filtering)
+# Version: 5.3.3 (Added Heuristics Config Support)
 # -----------------------------------------------------------------------------
 """
 List Management with prioritized compilation order.
@@ -191,15 +191,16 @@ class ListManager:
         
         return valid_rules
 
-    def compile_policy(self, policy_name, policy_config):
+    # --- UPDATED METHOD ---
+    def compile_policy(self, policy_name, policy_config, global_config=None):
         """
         Compile policy by applying rules in strict priority order.
-        Order of Application: DROP -> BLOCK -> ALLOW
-        This ensures that ALLOW rules (applied last) overwrite BLOCK/DROP rules in Trie/IntervalTree.
+        Order of Application: DROP > BLOCK > ALLOW
         """
         from filtering import RuleEngine, DomainCategorizer
         
-        engine = RuleEngine()
+        # Pass the global config to RuleEngine so it can access 'heuristics'
+        engine = RuleEngine(config=global_config)
         engine.categorizer = DomainCategorizer(self.categories_file)
 
         logger.info(f"Compiling Policy: {policy_name}")
@@ -224,15 +225,12 @@ class ListManager:
         drop_lists = policy_config.get('drop', [])
 
         # Priority Strategy: Last Write Wins
-        # 1. Apply DROP (Lowest priority overwrite)
         if drop_lists:
             apply_rules(drop_lists, 'DROP')
             
-        # 2. Apply BLOCK (Overwrites DROP)
         if block_lists:
             apply_rules(block_lists, 'BLOCK')
             
-        # 3. Apply ALLOW (Highest priority - Overwrites BLOCK & DROP)
         if allow_lists:
             apply_rules(allow_lists, 'ALLOW')
 
@@ -241,7 +239,6 @@ class ListManager:
             logger.info(f"  + Configuring {len(category_rules)} category rules")
             engine.set_category_rules(category_rules)
             
-        # --- FIXED: Apply Type Filters ---
         allowed_types = policy_config.get('allowed_types', [])
         blocked_types = policy_config.get('blocked_types', [])
         dropped_types = policy_config.get('dropped_types', [])

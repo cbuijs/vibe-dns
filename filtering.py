@@ -2,13 +2,13 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 9.5.0 (Fix cctld_mode logic)
+# Version: 9.6.0 (Added Heuristics)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine with strict rule ordering and action prioritization.
 Includes extended debug logging for deep inspection of filtering logic.
 Flows:
-  Query:  Domains -> GeoIP/ccTLD -> Regex
+  Query:  Domains -> GeoIP/ccTLD -> Regex -> Heuristics
   Answer: Domains -> ASN -> GeoIP -> IPs/CIDRs -> Regex
 Priority:
   ALLOW > BLOCK > DROP
@@ -23,6 +23,7 @@ import logging
 from collections import defaultdict
 from utils import get_logger
 from validation import is_valid_domain
+from heuristics import DomainHeuristics
 
 try:
     from intervaltree import IntervalTree
@@ -163,7 +164,7 @@ def _make_answer_action_dict():
     return {'ALLOW': [], 'BLOCK': [], 'DROP': []}
 
 class RuleEngine:
-    def __init__(self):
+    def __init__(self, config: dict = None):
         self.query_rules = {
             'domain': DomainTrie(),
             # Regex separated by action for strict priority checking
@@ -186,6 +187,10 @@ class RuleEngine:
         self.category_rules = {}
         
         self._regex_cache = {}
+
+        # Initialize Heuristics
+        heuristics_config = config.get('heuristics', {}) if config else {}
+        self.heuristics = DomainHeuristics(heuristics_config)
 
     def set_type_filters(self, allowed: list[str], blocked: list[str], dropped: list[str] = None):
         if allowed:
@@ -214,6 +219,26 @@ class RuleEngine:
         if self.blocked_types and qtype in self.blocked_types:
             return "BLOCK", f"Type {qtype_name} IS in blocked list", "PolicyTypeFilter"
         return "PASS", None, None
+
+    def check_heuristics(self, qname_norm: str) -> tuple:
+        """
+        Check domain against heuristic analysis.
+        Returns: (Action, Reason, Score)
+        """
+        if not self.heuristics.enabled:
+            return "PASS", None, 0
+            
+        score, reasons = self.heuristics.analyze(qname_norm)
+        
+        # Format reasons for logging
+        reason_str = ", ".join(reasons) if reasons else "Clean"
+        
+        if score >= self.heuristics.block_threshold:
+            # Action, Reason (for log), Score
+            return "BLOCK", reason_str, score
+            
+        # Return PASS but keep the reason_str/score for logging purposes
+        return "PASS", reason_str, score
 
     def add_rule(self, rule_text, action='BLOCK', list_name="Unknown"):
         """
@@ -306,7 +331,6 @@ class RuleEngine:
         
         target = self.answer_rules if is_answer_only else self.query_rules
         target['domain'].insert(clean_normalized, action=action, rule_data=rule_text, list_name=list_name)
-        # logger.debug(f"Added Domain rule: {clean_normalized} -> {action}")
         return "domain"
 
     def is_blocked(self, qname_norm: str, geoip_lookup=None):
@@ -327,9 +351,6 @@ class RuleEngine:
         # 2. GeoIP/ccTLD
         if geoip_lookup and geoip_lookup.cctld_mapper and geoip_lookup.cctld_mapper.enabled:
             # Respect configuration: Only check ccTLD if mode is explicitly 'cctld_first'.
-            # 'geoip_only' = Ignore TLDs (Answer only).
-            # 'cctld_geoip' = Hint only (Answer only).
-            
             cctld_mode = getattr(geoip_lookup, 'cctld_mode', 'geoip_only')
             
             if cctld_mode == 'cctld_first':
