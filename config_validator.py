@@ -2,7 +2,7 @@
 # filename: config_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 3.1.0 (Priority Support)
+# Version: 3.2.0 (Priority Support & PTR Check)
 # -----------------------------------------------------------------------------
 """
 Configuration Validation Module - Complete coverage for all config options.
@@ -55,6 +55,7 @@ class ConfigValidator:
         self._validate_deduplication(config.get('deduplication', {}))
         self._validate_rate_limit(config.get('rate_limit', {}))
         self._validate_response(config.get('response', {}))
+        self._validate_filtering(config.get('filtering', {}))
         self._validate_categorization(config)
         self._validate_groups(config.get('groups', {}))
         self._validate_group_files(config.get('group_files', {}))
@@ -543,6 +544,22 @@ class ConfigValidator:
             self.errors.append(f"response.ip_block_mode: Invalid mode '{block_mode}', must be one of {valid_block_modes}")
 
     # =========================================================================
+    # FILTERING SECTION
+    # =========================================================================
+    def _validate_filtering(self, filtering_cfg: Dict[str, Any]):
+        """Validate filtering configuration"""
+        if not isinstance(filtering_cfg, dict):
+            if filtering_cfg is not None:
+                self.errors.append("filtering: Must be a dictionary")
+            return
+
+        # Check PTR check mode
+        valid_ptr_modes = ['none', 'strict']
+        ptr_check = filtering_cfg.get('ptr_check', 'none')
+        if ptr_check not in valid_ptr_modes:
+            self.errors.append(f"filtering.ptr_check: Invalid mode '{ptr_check}', must be one of {valid_ptr_modes}")
+
+    # =========================================================================
     # CATEGORIZATION OPTIONS
     # =========================================================================
     def _validate_categorization(self, config: Dict[str, Any]):
@@ -902,4 +919,4 @@ def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]
     """
     validator = ConfigValidator()
     return validator.validate(config)
-    
+

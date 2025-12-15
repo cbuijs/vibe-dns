@@ -2,11 +2,11 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 9.3.0 (Restored Logging & Strict Priority)
+# Version: 9.3.1 (Extended Logging)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine with strict rule ordering and action prioritization.
-Includes comprehensive logging for all rule matches.
+Includes extended debug logging for deep inspection of filtering logic.
 Flows:
   Query:  Domains -> GeoIP/ccTLD -> Regex
   Answer: Domains -> ASN -> GeoIP -> IPs/CIDRs -> Regex
@@ -126,25 +126,31 @@ class DomainCategorizer:
             
             if 'tlds' in data and tld in data['tlds']:
                 score = max(score, 90)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"  - Category '{category}': TLD match ({tld}) -> 90%")
             
             if category in self.regex_cache:
                 for pattern in self.regex_cache[category]:
                     if pattern.search(domain_norm):
                         score = max(score, 100)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"  - Category '{category}': Regex match -> 100%")
                         break
         
             if 'keywords' in data:
                 for kw in data['keywords']:
                     if kw in parts:
                         score = max(score, 95)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"  - Category '{category}': Keyword part match ({kw}) -> 95%")
                         break
                     elif kw in domain_norm:
                         score = max(score, 80)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"  - Category '{category}': Keyword string match ({kw}) -> 80%")
         
             if score > 0:
                 results[category] = score
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"  Category '{category}': {score}% match for {domain_norm}")
     
         return results
 
@@ -247,7 +253,7 @@ class RuleEngine:
             
             self.query_rules['geoip'][location_spec][action].append(data)
             self.answer_rules['geoip'][location_spec][action].append(data)
-            logger.info(f"✓ GEO-IP (Query+Answer): {rule_text} | Loc: {location_spec} | Action: {action} | List: '{list_name}'")
+            logger.debug(f"Added GEO-IP (Query+Answer) rule: {rule_text} -> {action}")
             return "geoip"
         
         elif rule_text.startswith('@AS'):
@@ -258,7 +264,7 @@ class RuleEngine:
             
             data = (rule_text, list_name)
             self.answer_rules['asn'][asn_spec][action].append(data)
-            logger.info(f"✓ ASN: {rule_text} | ASN: {asn_spec} | Action: {action} | List: '{list_name}'")
+            logger.debug(f"Added ASN rule: {rule_text} -> {action}")
             return "asn"
         
         elif rule_text.startswith('@'):
@@ -267,7 +273,7 @@ class RuleEngine:
             data = (rule_text, list_name)
             
             self.query_rules['geoip'][location_spec][action].append(data)
-            logger.info(f"✓ GEO-IP (Query ONLY): {rule_text} | Loc: {location_spec} | Action: {action} | List: '{list_name}'")
+            logger.debug(f"Added GEO-IP (Query Only) rule: {rule_text} -> {action}")
             return "geoip"
         
         # --- Regex Rules ---
@@ -286,6 +292,7 @@ class RuleEngine:
             target = self.answer_rules if is_answer_only else self.query_rules
             # Store in prioritized buckets
             target['regex'][action].append(data)
+            logger.debug(f"Added Regex rule: {rule_text} -> {action}")
             return "regex"
 
         # --- Domain Rules (Trie) ---
@@ -299,6 +306,7 @@ class RuleEngine:
         
         target = self.answer_rules if is_answer_only else self.query_rules
         target['domain'].insert(clean_normalized, action=action, rule_data=rule_text, list_name=list_name)
+        # logger.debug(f"Added Domain rule: {clean_normalized} -> {action}")
         return "domain"
 
     def is_blocked(self, qname_norm: str, geoip_lookup=None):
@@ -313,6 +321,7 @@ class RuleEngine:
         # so the Trie inherently respects ALLOW > BLOCK > DROP override logic.
         match = self.query_rules['domain'].match(qname_norm)
         if match:
+            logger.debug(f"Query Domain Match: {qname_norm} -> {match['action']} (Rule: {match['rule']})")
             return match['action'], match['rule'], match['list']
 
         # 2. GeoIP/ccTLD
@@ -321,6 +330,8 @@ class RuleEngine:
             
             if cctld_country:
                 locations = geoip_lookup.cctld_mapper.expand_locations(cctld_country)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Query GeoIP Check: {qname_norm} -> {cctld_country} -> Locations: {locations}")
                 
                 # Priority: ALLOW > BLOCK > DROP
                 for action in ['ALLOW', 'BLOCK', 'DROP']:
@@ -336,6 +347,7 @@ class RuleEngine:
         for action in ['ALLOW', 'BLOCK', 'DROP']:
             for pattern, rule, list_name in self.query_rules['regex'][action]:
                 if pattern.search(qname_norm):
+                    logger.debug(f"Query Regex Match: {qname_norm} -> {action} (Rule: {rule})")
                     return action, rule, list_name
 
         return "PASS", None, None
@@ -351,6 +363,7 @@ class RuleEngine:
         if qname_norm:
             match = self.answer_rules['domain'].match(qname_norm)
             if match:
+                logger.debug(f"Answer Domain Match: {qname_norm} -> {match['action']} (Rule: {match['rule']})")
                 return match['action'], match['rule'], match['list']
 
         # 2. ASN
@@ -404,12 +417,15 @@ class RuleEngine:
                     
                     if 'ALLOW' in found_actions:
                         m = found_actions['ALLOW']
+                        logger.debug(f"Answer IP Match: {ip_str} -> ALLOW (Rule: {m['rule']})")
                         return 'ALLOW', m['rule'], m['list']
                     if 'BLOCK' in found_actions:
                         m = found_actions['BLOCK']
+                        logger.debug(f"Answer IP Match: {ip_str} -> BLOCK (Rule: {m['rule']})")
                         return 'BLOCK', m['rule'], m['list']
                     if 'DROP' in found_actions:
                         m = found_actions['DROP']
+                        logger.debug(f"Answer IP Match: {ip_str} -> DROP (Rule: {m['rule']})")
                         return 'DROP', m['rule'], m['list']
             except ValueError: 
                 pass 
@@ -419,6 +435,7 @@ class RuleEngine:
             for action in ['ALLOW', 'BLOCK', 'DROP']:
                 for pattern, rule, list_name in self.answer_rules['regex'][action]:
                     if pattern.search(qname_norm):
+                        logger.debug(f"Answer Regex Match: {qname_norm} -> {action} (Rule: {rule})")
                         return action, rule, list_name
         
         return "PASS", None, None

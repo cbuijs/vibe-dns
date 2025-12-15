@@ -2,13 +2,14 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 7.5.1 (Restored Logging)
+# Version: 7.7.0 (Short-Circuit Logic + PTR Check)
 # -----------------------------------------------------------------------------
 """
 Core DNS Resolution logic.
 Matches filtering flow: Query Checks -> Upstream -> Answer Checks.
 Implements 'filter' mode to strip specific blocked IPs from responses.
-Includes restored logging for rule hits and decisions.
+Enforces strict short-circuiting: Once an Action (BLOCK/DROP/ALLOW) is hit, 
+processing stops immediately.
 """
 
 import asyncio
@@ -222,6 +223,12 @@ class DNSHandler:
         self.ecs_override_ipv4 = server_cfg.get('ecs_override_ipv4')
         self.ecs_override_ipv6 = server_cfg.get('ecs_override_ipv6')
         
+        # PTR Check Configuration
+        self.ptr_check_mode = self.config.get('filtering', {}).get('ptr_check', 'none').lower()
+        if self.ptr_check_mode not in ['strict', 'none']:
+            logger.warning(f"Invalid ptr_check mode '{self.ptr_check_mode}', defaulting to 'none'")
+            self.ptr_check_mode = 'none'
+        
         self.group_ip_map: Dict[str, str] = {}
         self.group_mac_map: Dict[str, str] = {}
         self.group_srv_ip_map: Dict[str, str] = {}
@@ -232,7 +239,7 @@ class DNSHandler:
 
         self._build_client_maps(groups or {})
         
-        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}")
+        logger.info(f"DNSHandler Ready. BlockMode: {self.ip_block_mode}, PTR Check: {self.ptr_check_mode}")
 
     def _build_client_maps(self, groups: Dict[str, list]):
         for gname, identifiers in groups.items():
@@ -294,7 +301,26 @@ class DNSHandler:
             base = qname_lower[:-13]
             parts = base.split('.')
             if len(parts) == 4:
-                return ".".join(parts[::-1])
+                try:
+                    for part in parts:
+                        if not 0 <= int(part) <= 255:
+                            return None
+                    return ".".join(parts[::-1])
+                except ValueError:
+                    return None
+        elif qname_lower.endswith('.ip6.arpa'):
+            base = qname_lower[:-9]
+            parts = base.split('.')
+            if len(parts) == 32:
+                try:
+                    for part in parts: int(part, 16)
+                    nibbles = parts[::-1]
+                    hex_str = "".join(nibbles)
+                    ip = ":".join(hex_str[i:i+4] for i in range(0, 32, 4))
+                    ipaddress.IPv6Address(ip)
+                    return ip
+                except ValueError:
+                    return None
         return None
 
     def _apply_mask(self, ip_str: str, mask: int) -> Tuple[str, int]:
@@ -558,10 +584,23 @@ class DNSHandler:
         req_logger = ContextAdapter(logger, ctx)
         req_logger.info(f"QUERY: {qname_norm} [{dns.rdatatype.to_text(qtype)}]")
 
+        # --- PTR Strict Check ---
+        if qtype == dns.rdatatype.PTR and self.ptr_check_mode == 'strict':
+            is_reverse = qname_norm.endswith('.in-addr.arpa') or qname_norm.endswith('.ip6.arpa')
+            if is_reverse:
+                extracted_ip = self._extract_ip_from_ptr(qname_str)
+                if not extracted_ip:
+                    req_logger.info(f"⛔ BLOCKED | Reason: Invalid PTR Syntax | Domain: {qname_norm} | Mode: ptr_check=strict")
+                    return self.create_block_response(request, q.name, qtype).to_wire()
+                else:
+                    req_logger.debug(f"PTR Check OK: {qname_norm} -> {extracted_ip}")
+
         group = self.identify_client(client_addr, meta, req_logger)
         group_key = group if group else "default"
         policy_name, policy_source = self.get_active_policy(group, req_logger)
         
+        req_logger.debug(f"DECISION: Client Group: '{group_key}' -> Policy: '{policy_name}' (Source: {policy_source})")
+
         cached_decision = self.decision_cache.get_decision(qname_norm, qtype, group_key, policy_name)
         is_explicit_allow = False
         
@@ -612,7 +651,7 @@ class DNSHandler:
             return self.create_block_response(request, q.name, qtype).to_wire()
         elif policy_name == "DROP":
             req_logger.info(f"🔇 DROPPED | Reason: {policy_source} | Group: {group_key} | Policy: DROP")
-            self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': policy_source, 'rule': 'N/A', 'list': policy_source})
+            self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Category Match', 'rule': 'N/A', 'list': policy_source})
             return None
         elif policy_name == "ALLOW":
             req_logger.info(f"✓ ALLOWED | Reason: {policy_source} | Group: {group_key} | Policy: ALLOW")
@@ -641,6 +680,8 @@ class DNSHandler:
                          rule = engine.category_rules[cat]
                          if score >= rule.get('min_confidence', 0):
                              action = rule.get('action', 'ALLOW')
+                             req_logger.debug(f"DEBUG: Category '{cat}' match ({score}%) -> Rule Action: {action}")
+                             
                              if action == 'BLOCK':
                                  req_logger.info(f"⛔ BLOCKED | Reason: Category Match | Category: '{cat}' | Confidence: {score}% | Policy: '{policy_name}'")
                                  self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': 'Category Match', 'rule': f"Category: {cat}", 'list': policy_name})
@@ -653,30 +694,38 @@ class DNSHandler:
                                  req_logger.info(f"✓ ALLOWED | Reason: Category Match | Category: '{cat}' | Confidence: {score}% | Policy: '{policy_name}'")
                                  is_explicit_allow = True
                                  self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Category Match', 'rule': f"Category: {cat}", 'list': policy_name})
+                                 break # Stop category loop, and due to flag set, will skip next checks
+                         else:
+                             req_logger.debug(f"DEBUG: Category '{cat}' match ({score}%) -> Below Min Confidence ({rule.get('min_confidence', 0)}%)")
 
             # 3. Query Type
-            action_type, reason, _ = engine.check_type(qtype)
-            if action_type == "BLOCK":
-                req_logger.info(f"⛔ BLOCKED | Reason: Query Type Filter | Type: {dns.rdatatype.to_text(qtype)} | Details: {reason}")
-                return self.create_block_response(request, q.name, qtype).to_wire()
-            elif action_type == "DROP":
-                req_logger.info(f"🔇 DROPPED | Reason: Query Type Filter | Type: {dns.rdatatype.to_text(qtype)} | Details: {reason}")
-                return None
+            if not is_explicit_allow:
+                action_type, reason, _ = engine.check_type(qtype)
+                if action_type == "BLOCK":
+                    req_logger.info(f"⛔ BLOCKED | Reason: Query Type Filter | Type: {dns.rdatatype.to_text(qtype)} | Details: {reason}")
+                    return self.create_block_response(request, q.name, qtype).to_wire()
+                elif action_type == "DROP":
+                    req_logger.info(f"🔇 DROPPED | Reason: Query Type Filter | Type: {dns.rdatatype.to_text(qtype)} | Details: {reason}")
+                    return None
 
             # 4. Standard Blocking (Domains -> GeoIP -> Regex)
-            action, rule, list_name = engine.is_blocked(qname_norm, geoip_lookup=self.geoip)
-            if action == "BLOCK":
-                req_logger.info(f"⛔ BLOCKED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
-                self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
-                return self.create_block_response(request, q.name, qtype).to_wire()
-            elif action == "DROP":
-                req_logger.info(f"🔇 DROPPED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
-                self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
-                return None
-            elif action == "ALLOW":
-                req_logger.info(f"✓ ALLOWED | Reason: Domain Allowlist | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
-                is_explicit_allow = True
-                self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Domain Allowlist', 'rule': rule, 'list': list_name})
+            if not is_explicit_allow:
+                action, rule, list_name = engine.is_blocked(qname_norm, geoip_lookup=self.geoip)
+                if action:
+                    req_logger.debug(f"DEBUG: Domain/GeoIP Rule Match -> Action: {action} | Rule: '{rule}' | List: '{list_name}'")
+                
+                if action == "BLOCK":
+                    req_logger.info(f"⛔ BLOCKED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
+                    return self.create_block_response(request, q.name, qtype).to_wire()
+                elif action == "DROP":
+                    req_logger.info(f"🔇 DROPPED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
+                    return None
+                elif action == "ALLOW":
+                    req_logger.info(f"✓ ALLOWED | Reason: Domain Allowlist | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
+                    is_explicit_allow = True
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Domain Allowlist', 'rule': rule, 'list': list_name})
 
         dedup_key = (qname_norm, qtype, policy_name, group_key)
         final_msg = await self.deduplicator.get_or_process(dedup_key, 
@@ -788,6 +837,10 @@ class DNSHandler:
                             ip_text = rdata.to_text()
                             # Priority checked inside check_answer
                             rrset_action, rrset_rule, rrset_list = engine.check_answer(None, ip_text, self.geoip, domain_hint=qname_norm)
+                            
+                            if rrset_action != "PASS":
+                                req_logger.debug(f"DEBUG: Answer Match (IP) -> Action: {rrset_action} | IP: {ip_text} | Rule: '{rrset_rule}'")
+
                             if rrset_action in ['BLOCK', 'DROP']:
                                 target_text = ip_text
                                 matched_rule = rrset_rule
@@ -797,6 +850,10 @@ class DNSHandler:
                         for rdata in rrset:
                             target_norm = normalize_domain(str(rdata.target))
                             rrset_action, rrset_rule, rrset_list = engine.check_answer(target_norm, None, self.geoip)
+                            
+                            if rrset_action != "PASS":
+                                req_logger.debug(f"DEBUG: Answer Match (Domain) -> Action: {rrset_action} | Domain: {target_norm} | Rule: '{rrset_rule}'")
+
                             if rrset_action in ['BLOCK', 'DROP']:
                                 target_text = target_norm
                                 matched_rule = rrset_rule

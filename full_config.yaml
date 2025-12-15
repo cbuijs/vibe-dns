@@ -75,150 +75,225 @@ server:
 
 # =============================================================================
 # 3. GEOIP CONFIGURATION
-# found in: geoip.py
+# found in: geoip.py, cctld.py
 # =============================================================================
 geoip:
+  # Master switch for GeoIP functionality
   enabled: true
   
-  # Path to unified .vibe database (compiled by geoip_compiler.py)
+  # Path to the binary database compiled via geoip_compiler.py
   unified_database: "./geoip.vibe"
   
-  # ccTLD Resolution Mode:
-  # - geoip_first: Trust IP-based GeoIP, fall back to ccTLD
-  # - cctld_first: Trust ccTLD, fall back to GeoIP
-  # - geoip_only:  Only use IP-based GeoIP
-  # - cctld_only:  Only use ccTLD
-  cctld_mode: "geoip_first"
+  # Logic for mapping Domain TLDs (e.g., .cn) vs IP Locations
+  # - geoip_only:  Ignore TLDs. Only use IP-based lookup of the answer.
+  # - cctld_first: If domain TLD matches a blocked location, block query immediately.
+  # - cctld_geoip: Use TLD as a hint to disambiguate IP location.
+  cctld_mode: "geoip_only"
 
 # =============================================================================
-# 4. UPSTREAM RESOLVERS
+# 4. UPSTREAM RESOLUTION
 # found in: upstream_manager.py
 # =============================================================================
 upstream:
-  # Selection mode: "fastest", "loadbalance", "failover", "random", "sticky", "none"
+  # Check if upstreams are reachable before starting the server
+  startup_check_enabled: true
+  
+  # If all configured servers fail, use bootstrap servers as last resort
+  fallback_enabled: false
+  
+  # Allow non-RFC compliant underscores in domain names (e.g., _service.example.com)
+  allow_underscores: false
+  
+  # Load Balancing Strategy:
+  # - fastest:     Use server with lowest latency (pings periodically)
+  # - loadbalance: Distribute based on average response time
+  # - failover:    Use first server; only switch if it fails
+  # - random:      Pick random server per request
+  # - roundrobin:  Rotate through servers sequentially
+  # - sticky:      Client IP is pinned to specific upstream server
+  # - none:        Use first available (dumb forwarder)
   mode: "fastest"
   
-  # Monitoring options
-  monitor_interval: 30
-  monitor_on_query: false
+  # Seconds between latency probes
+  monitor_interval: 60
   
-  # Circuit breaker settings
+  # Trigger background latency check immediately if a user queries a domain
+  monitor_on_query: true
+  
+  # Domain used for latency probing
+  test_domain: "www.google.com"
+  
+  # Max concurrent connections per HTTP/2 client (for DoH upstreams)
+  connection_limit: 20
+  
+  # --- Circuit Breaker ---
+  # Temporarily stops sending queries to a dead upstream
   circuit_breaker_enabled: true
-  circuit_failure_threshold: 3
-  circuit_recovery_timeout: 60
-  
-  # Startup health check
-  startup_check_enabled: true
-  startup_check_timeout: 5
-  max_startup_retries: 3
-  
-  # Bootstrap servers (used if all configured servers fail)
-  fallback_enabled: true
-  bootstrappers:
-    - { ip: "86.54.11.1", port: 53 }
-    - { ip: "9.9.9.9", port: 53 }
-  
-  # Upstream server groups
+  circuit_failure_threshold: 3   # Number of failures before opening circuit
+  circuit_recovery_timeout: 30   # Seconds to wait before retrying a dead server
+
+  # Bootstrap DNS servers 
+  # Used to resolve hostnames of DoH/DoT upstreams (e.g. resolving dns.google)
+  bootstrap:
+    - "8.8.8.8"
+    - "1.1.1.1"
+
+  # Upstream Server Definitions
+  # Syntax: protocol://host:port/path#forced_ip
+  # Protocols: udp, tcp, tls (DoT), https (DoH)
   groups:
     Default:
       servers:
-        - "udp://1.1.1.1:53"
-        - "udp://8.8.8.8:53"
-        - "udp://9.9.9.9:53"
+        - url: "udp://8.8.8.8:53"
+          priority: 10
+        - url: "udp://1.1.1.1:53"
+          priority: 20
     
     Secure:
       servers:
-        - "https://dns.google:443/dns-query"
-        - "https://cloudflare-dns.com:443/dns-query"
-        - "tls://1.1.1.1:853"
-    
-    Adguard:
-      servers:
-        - "https://dns.adguard-dns.com:443/dns-query"
-        - "tls://dns.adguard-dns.com:853"
+        # DoT Example (Forced IP prevents bootstrap lookup)
+        - url: "tls://1.1.1.1:853#1.1.1.1"
+        # DoH Example
+        - url: "https://dns.google:443/dns-query#8.8.4.4"
 
 # =============================================================================
-# 5. CACHE CONFIGURATION
-# found in: resolver.py, cache.py
+#  HOW PRIORITY WORKS
+# =============================================================================
+# 
+# - Lower priority value = more preferred
+# - Default priority is 100 (when not specified)
+# - Servers are sorted by (priority, latency) in fastest/failover/loadbalance modes
+# - Within same priority tier, latency determines order
+#
+# Example with these servers:
+#   Server A: priority=10, latency=50ms
+#   Server B: priority=10, latency=30ms  
+#   Server C: priority=50, latency=10ms
+#
+# Sort order: B, A, C
+# (B and A share priority 10, B wins on latency; C has worse priority despite best latency)
+#
+# Use cases:
+# - Prefer local/private DNS over public
+# - Prefer encrypted (DoH/DoT) over plain UDP
+# - Set fallback servers with higher priority numbers
+
+# =============================================================================
+# 5. CACHING
+# found in: cache_stats.py, resolver.py
 # =============================================================================
 cache:
-  enabled: true
-  max_size: 10000
-  max_ttl: 86400
-  min_ttl: 30
+  # Max number of DNS records to hold in memory. 0 to disable.
+  size: 10000
   
-  # Prefetch settings
-  prefetch_enabled: true
-  prefetch_threshold: 0.2
+  # Garbage collection interval (seconds)
+  gc_interval: 300
+  
+  # Cache TTL for upstream failures/NXDOMAIN (if upstream doesn't provide one)
+  negative_ttl: 60
+  
+  # Optimistic Prefetching
+  # If a record is accessed within X seconds of expiry, refresh it in background.
+  # Set to 0 to disable.
+  prefetch_margin: 10
+  
+  # Minimum hits a record needs before it qualifies for prefetch
   prefetch_min_hits: 3
-  
-  # Stale serving
-  serve_stale: true
-  stale_ttl: 3600
 
-# =============================================================================
-# 6. DECISION CACHE
-# found in: decision_cache.py
-# =============================================================================
+# Cache for Policy Decisions (e.g., "google.com is BLOCKED for group X")
+# Significantly speeds up repeated queries for filtered domains/categories.
 decision_cache:
-  enabled: true
-  max_size: 50000
-  default_ttl: 300
+  size: 50000
+  ttl: 300
 
-# =============================================================================
-# 7. DEDUPLICATION & RATE LIMITING
-# found in: deduplication.py, rate_limiter.py
-# =============================================================================
 deduplication:
+  # Merge identical concurrent requests into one upstream query
+  # Prevents "thundering herd" if multiple clients request same domain instantly.
   enabled: true
-  timeout: 2.0
-  max_size: 5000
 
+# =============================================================================
+# 6. RATE LIMITING
+# found in: resolver.py
+# =============================================================================
 rate_limit:
   enabled: true
-  # Limits per IP (requests per second)
-  requests_per_second: 50
-  burst_size: 100
-  # Action when limit exceeded: "DROP", "TC" (truncate response)
-  action: "TC"
+  
+  # Time window in seconds to track requests
+  window_seconds: 60
+  
+  # Group clients by subnet (0-32 for IPv4, 0-128 for IPv6)
+  # 32/128 means individual IPs. 24/64 means subnets.
+  ipv4_mask: 32
+  ipv6_mask: 128
+  
+  # Max UDP queries per window before forcing fallback to TCP (TC Flag set)
+  # This mitigates DNS amplification attacks.
+  udp_threshold: 100
+  
+  # Total queries (UDP+TCP) per window before completely dropping packets
+  total_threshold: 200
 
 # =============================================================================
-# 8. RESPONSE SHAPING
+# 7. RESPONSE MODIFICATION
 # found in: resolver.py
 # =============================================================================
 response:
-  # Round-robin answers on each query
-  round_robin_answers: true
+  # Randomize order of A/AAAA records (Simple Load balancing for client)
+  round_robin_enabled: false
   
-  # Clamp TTL values
-  clamp_ttl_min: 30
-  clamp_ttl_max: 86400
+  # Recursively resolve CNAMEs and remove the intermediate chain from the answer.
+  # Returns only the final IP record to the client (CNAME Flattening).
+  cname_collapse: true
   
-  # Inject blocking IP for blocked domains
-  # Options: "NULL" (0.0.0.0/::), IP address, or false
+  # RCODE to return if CNAME collapse results in empty answer: NXDOMAIN or NOERROR
+  cname_empty_rcode: "NXDOMAIN"
+  
+  # Strip Authority and Additional sections to reduce packet size
+  minimize_response: false
+  
+  # --- TTL Normalization ---
+  min_ttl: 0
+  max_ttl: 86400
+  # Sync TTLs across all records in an answer. Options:
+  # none, first, last, lowest, highest, average
+  ttl_sync_mode: "none"
+  
+  # --- Blocking Behavior ---
+  # DNS RCODE for blocked queries: REFUSED, NXDOMAIN, NOERROR, SERVFAIL
+  block_rcode: "REFUSED"
+  
+  # TTL for blocked responses
+  block_ttl: 60
+  
+  # If specified, return this IP instead of RCODE for A/AAAA blocks (Sinkholing).
+  # Use "NULL" for 0.0.0.0 (IPv4) / :: (IPv6)
   block_ip: "NULL"
   
-  # RCODE to return for blocked domains
-  # Options: "NXDOMAIN", "REFUSED", "SERVFAIL"
-  block_rcode: "NXDOMAIN"
-  
-  # IP blocking mode for answer filtering
-  # - "block": Return NXDOMAIN/REFUSED
-  # - "filter": Remove specific IPs from answer, return rest
+  # How to handle responses containing blocked IPs (e.g. from GeoIP or Lists):
+  # - filter: Remove only the blocked IPs from the answer. Return remaining IPs.
+  #           If NO IPs remain, the standard 'block_rcode'/'block_ip' is applied.
+  # - block:  Block the *entire* response if it contains ANY blocked IP.
   ip_block_mode: "filter"
   
   # Apply blocklists/GeoIP rules to IPs found inside the answer section recursively.
+  # If false, only checks explicit IP blocklists, not domain blocklists on answers.
   match_answers_globally: false
 
 # =============================================================================
-# 9. CATEGORIZATION
+# 8. FILTERING & CATEGORIZATION
 # found in: filtering.py
 # =============================================================================
 categorization_enabled: true
 categories_file: "categories.json"
 
+filtering:
+  # PTR Check Mode
+  # - strict: Validate that PTR query names are valid IP-address reversals (in-addr.arpa/ip6.arpa). Block if invalid.
+  # - none:   No validation (Default).
+  ptr_check: "none"
+
 # =============================================================================
-# 10. CLIENT GROUPS
+# 9. CLIENT GROUPS
 # found in: server.py, resolver.py
 # =============================================================================
 # How often to refresh ARP/Neigh tables for MAC resolution (Seconds)
@@ -258,7 +333,7 @@ group_files:
   kids: "./groups/kids.txt"
 
 # =============================================================================
-# 11. SCHEDULES
+# 10. SCHEDULES
 # found in: resolver.py
 # =============================================================================
 schedules:
@@ -270,7 +345,7 @@ schedules:
     - { days: ["Mon", "Tue", "Wed", "Thu", "Fri"], start: "09:00", end: "17:00" }
 
 # =============================================================================
-# 12. FILTER LISTS
+# 11. FILTER LISTS
 # found in: list_manager.py
 # =============================================================================
 # Auto-refresh interval for downloading lists (seconds)
@@ -290,43 +365,43 @@ lists:
   my_whitelist:
     - source: "./lists/whitelist.txt"
       hosts_domain_type: "exact"
-  
-  # GeoIP blocking list (v10.0: Now supports ALLOW for all rule types)
+      
+  # GeoIP blocking list (uses tags like @@CN, @@RUSSIA, @AS15169)
   # Syntax: 
-  #   @@TAG = Query (ccTLD) AND Answer (IP) - Supports ALLOW, BLOCK, DROP
-  #   @TAG  = Query (ccTLD) only - Supports ALLOW, BLOCK, DROP
-  #   @AS#  = Answer (ASN) only - Supports ALLOW, BLOCK, DROP (NEW in v10.0!)
+  #   @@TAG = Block Query (ccTLD) AND Answer (IP)
+  #   @TAG  = Block Query (ccTLD) only
+  #   @AS#  = Block Answer (ASN)
   geo_block:
-    - source: "./lists/geo_block.txt"
-  
-  # NEW in v10.0: Allowlist examples
-  trusted_cdns:
-    - source: "./lists/trusted_cdns.txt"
-      # Contains: @AS13335 (Cloudflare), @AS15169 (Google), @AS16509 (AWS)
-  
-  trusted_countries:
-    - source: "./lists/trusted_countries.txt"
-      # Contains: @@US, @@CA, @@EU, @@WESTERN_EUROPE
+    - source: "./lists/geo.txt"
 
 # =============================================================================
-# 13. POLICIES
+# 12. POLICIES
 # found in: filtering.py, resolver.py
 # =============================================================================
+# RULE PRIORITY: ALLOW > BLOCK > DROP
+# If a rule exists in both an allowed list and a blocked list, ALLOW wins.
+#
+# PROCESSING FLOW:
+# 1. Query Analysis: Domain -> GeoIP/ccTLD -> Regex
+#    (If Query is allowed explicitly, Upstream processing occurs without Answer checks)
+#
+# 2. Upstream Resolution
+#
+# 3. Answer Analysis: Domain -> ASN -> GeoIP -> IP/CIDR -> Regex
+#    (Only if Query was not explicitly allowed by a rule)
+
 policies:
   # Default policy if no group matches (Implicit)
   Default:
     upstream_group: "Default"
   
-  # Strict policy for Kids (v10.0: Enhanced with ALLOW support)
+  # Strict policy for Kids
   KidsPolicy:
     upstream_group: "Secure"
     
-    # v10.0: ALLOW lists now support ASN and GeoIP rules!
-    allow: ["my_whitelist", "trusted_cdns"]
-    
-    # BLOCK lists (checked after ALLOW)
+    # Lists to apply
+    allow: ["my_whitelist"]
     block: ["ad_servers", "geo_block"]
-    
     # Silent drop (no response) - good for telemetry/tracking
     drop: []
     
@@ -354,23 +429,9 @@ policies:
     allow: ["my_whitelist"]
     # Note: To make this strictly whitelist-only, set the Group's 'default_action' to BLOCK
     # or ensure a 'block all' list is applied here.
-  
-  # NEW in v10.0: Geo-fencing example
-  RegionalPolicy:
-    upstream_group: "Default"
-    # Only allow specific countries (requires group default_action: BLOCK)
-    allow: ["trusted_countries"]
-    block: ["geo_block"]
-  
-  # NEW in v10.0: CDN allowlist example
-  EnterprisePolicy:
-    upstream_group: "Corporate"
-    # Allow trusted CDNs even if from blocked countries
-    allow: ["trusted_cdns", "trusted_countries", "my_whitelist"]
-    block: ["ad_servers", "geo_block"]
 
 # =============================================================================
-# 14. ASSIGNMENTS
+# 13. ASSIGNMENTS
 # found in: resolver.py
 # =============================================================================
 assignments:
@@ -387,3 +448,4 @@ assignments:
     
   admin_devices:
     policy: "Default"
+

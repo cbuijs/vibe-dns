@@ -2,11 +2,12 @@
 # filename: list_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 5.3.0 (Priority Compilation)
+# Version: 5.3.1 (Extended Logging)
 # -----------------------------------------------------------------------------
 """
 List Management with prioritized compilation order.
 Ensures ALLOW > BLOCK > DROP priority by applying rules in specific sequence.
+Includes extended logging for rule compilation.
 """
 
 import os
@@ -104,17 +105,21 @@ class ListManager:
                             parsed_rules = self._load_processed_cache(cache_path_pkl)
                             if parsed_rules:
                                 rules.update(parsed_rules)
+                                logger.debug(f"Loaded processed cache for {source_url} ({len(parsed_rules)} rules)")
                                 continue
                         
                         if self._is_cache_valid(cache_path_raw):
                             with open(cache_path_raw, 'r', encoding='utf-8') as f: 
                                 content = f.read()
+                            logger.debug(f"Loaded raw cache for {source_url}")
                         else:
+                            logger.info(f"Downloading: {source_url}")
                             content = await self._fetch_url(source_url)
                             if content:
                                 with open(cache_path_raw, 'w', encoding='utf-8') as f: 
                                     f.write(content)
                             elif os.path.exists(cache_path_raw):
+                                logger.warning(f"Download failed for {source_url}, using stale cache")
                                 with open(cache_path_raw, 'r', encoding='utf-8') as f: 
                                     content = f.read()
                         
@@ -122,6 +127,7 @@ class ListManager:
                             parsed_rules = self._parse_content(content, domain_type)
                             rules.update(parsed_rules)
                             self._save_processed_cache(cache_path_pkl, parsed_rules)
+                            logger.debug(f"Parsed {len(parsed_rules)} rules from {source_url}")
                         
                     else:
                         if os.path.exists(source_url):
@@ -130,19 +136,24 @@ class ListManager:
                                 parsed_rules = self._load_processed_cache(cache_path_pkl)
                                 if parsed_rules:
                                     rules.update(parsed_rules)
+                                    logger.debug(f"Loaded local processed cache for {source_url} ({len(parsed_rules)} rules)")
                                     continue
                             
+                            logger.info(f"Loading local file: {source_url}")
                             with open(source_url, 'r', encoding='utf-8') as f: 
                                 content = f.read()
                             parsed_rules = self._parse_content(content, domain_type)
                             rules.update(parsed_rules)
                             self._save_processed_cache(cache_path_pkl, parsed_rules)
+                            logger.debug(f"Parsed {len(parsed_rules)} rules from {source_url}")
+                        else:
+                            logger.warning(f"Local file not found: {source_url}")
 
                 except Exception as e:
                     logger.error(f"Error processing {source_url}: {e}")
             
             self.lists_data[name] = rules
-            logger.info(f"Loaded list '{name}': {len(rules)} rules")
+            logger.info(f"Loaded list '{name}': {len(rules)} unique rules")
 
     def _parse_content(self, text, hosts_domain_type='exact'):
         valid_rules = set()
@@ -204,7 +215,9 @@ class ListManager:
                     engine.add_rule(r, action=action, list_name=lname)
                     count += 1
             if count > 0:
-                logger.info(f"  + Applied {action}: {count} rules")
+                logger.info(f"  + Applied {action}: {count} rules from {list_names}")
+            else:
+                logger.debug(f"  + Applied {action}: 0 rules")
 
         allow_lists = policy_config.get('allow', [])
         block_lists = policy_config.get('block', [])
@@ -225,6 +238,7 @@ class ListManager:
 
         category_rules = policy_config.get('category_rules', {})
         if category_rules:
+            logger.info(f"  + Configuring {len(category_rules)} category rules")
             engine.set_category_rules(category_rules)
         
         return engine

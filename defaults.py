@@ -2,7 +2,7 @@
 # filename: defaults.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 2.0.0 (Optimized - Simplified Merging)
+# Version: 2.1.0 (Added PTR Check)
 # -----------------------------------------------------------------------------
 """
 Default configuration values - single source of truth.
@@ -67,6 +67,9 @@ DEFAULT_CONFIG = {
         'min_ttl': 0,
         'max_ttl': 86400,
         'ttl_sync_mode': 'none'
+    },
+    'filtering': {
+        'ptr_check': 'none'
     },
     'logging': {
         'level': 'INFO',
