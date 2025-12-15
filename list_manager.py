@@ -2,7 +2,7 @@
 # filename: list_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 5.3.1 (Extended Logging)
+# Version: 5.3.2 (Fix Type Filtering)
 # -----------------------------------------------------------------------------
 """
 List Management with prioritized compilation order.
@@ -240,6 +240,15 @@ class ListManager:
         if category_rules:
             logger.info(f"  + Configuring {len(category_rules)} category rules")
             engine.set_category_rules(category_rules)
+            
+        # --- FIXED: Apply Type Filters ---
+        allowed_types = policy_config.get('allowed_types', [])
+        blocked_types = policy_config.get('blocked_types', [])
+        dropped_types = policy_config.get('dropped_types', [])
+        
+        if allowed_types or blocked_types or dropped_types:
+            logger.info(f"  + Configuring Type Filters: Allow={allowed_types}, Block={blocked_types}, Drop={dropped_types}")
+            engine.set_type_filters(allowed_types, blocked_types, dropped_types)
         
         return engine
 
