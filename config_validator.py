@@ -2,11 +2,11 @@
 # filename: config_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 3.2.0 (Priority Support & PTR Check)
+# Version: 3.3.0 (Added Connection Reuse Validation)
 # -----------------------------------------------------------------------------
 """
 Configuration Validation Module - Complete coverage for all config options.
-Now supports upstream server priority validation.
+Now supports connection reuse validation.
 """
 
 import re
@@ -240,7 +240,7 @@ class ConfigValidator:
 
         # Boolean options
         for bool_key in ['startup_check_enabled', 'fallback_enabled', 'allow_underscores', 
-                         'circuit_breaker_enabled', 'monitor_on_query']:
+                         'circuit_breaker_enabled', 'monitor_on_query', 'connection_reuse']:
             val = upstream_cfg.get(bool_key)
             if val is not None and not isinstance(val, bool):
                 self.errors.append(f"upstream.{bool_key}: Must be boolean")

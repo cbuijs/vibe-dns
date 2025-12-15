@@ -34,7 +34,8 @@ DEFAULT_CONFIG = {
         'circuit_breaker_enabled': True,
         'circuit_failure_threshold': 3,
         'circuit_recovery_timeout': 30,
-        'connection_limit': 20
+        'connection_limit': 20,
+        'connection_reuse': False
     },
     'cache': {
         'size': 10000,
