@@ -2,16 +2,15 @@
 # filename: upstream_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.4.0 (Priority Support)
+# Version: 6.5.0 (DoH Connection Reuse & Strict IP Targeting)
 # -----------------------------------------------------------------------------
 """
-Upstream DNS Server Manager with Priority Support
+Upstream DNS Server Manager with Priority Support & Strict DoH IP Targeting.
 
-Changes in 6.4.0:
-- Added per-server priority configuration
-- Servers sorted by (priority, latency) tuple
-- Backwards compatible: string format defaults to priority 100
-- New dict format: {url: "...", priority: N}
+Changes in 6.5.0:
+- Implemented Strict IP Targeting for DoH (forces httpx to use specific server IP).
+- Added 'sni_hostname' extension to preserve SSL validation with IP-based URLs.
+- Ensures connection reuse is bucketed by (IP, Port) rather than just Hostname.
 """
 
 import asyncio
@@ -181,6 +180,10 @@ class UpstreamManager:
             try:
                 import httpx
                 
+                # We use a single persistent client.
+                # Connection pooling is handled automatically by httpx based on (scheme, host, port).
+                # By using the IP in the URL (see _doh_query), we force httpx to maintain 
+                # separate connection pools for each upstream IP, even if they share a hostname.
                 self.doh_client = httpx.AsyncClient(
                     http2=True,
                     verify=True,
@@ -191,7 +194,7 @@ class UpstreamManager:
                         keepalive_expiry=30.0
                     )
                 )
-                logger.info("DoH async client initialized with HTTP/2 and certificate verification")
+                logger.info("DoH async client initialized with HTTP/2 and strict IP targeting support")
             except ImportError:
                 logger.error("httpx is required for DoH support. Install with: pip install httpx")
                 raise
@@ -1061,13 +1064,37 @@ class UpstreamManager:
         try:
             await self._ensure_doh_client()
             
-            url = f"https://{server['host']}:{server['port']}{server['path']}"
+            # --- STRICT IP TARGETING FOR DOH ---
+            # Instead of using the hostname in the URL (which httpx resolves internally),
+            # we use the specific IP that vibe-dns selected and latency-checked.
+            # This ensures connection reuse is bucketed by (IP, Port), not Hostname.
             
-            headers = DOH_HEADERS.copy()
+            ip = server.get('ip')
+            host = server['host']
+            port = server['port']
+            path = server['path']
             
+            # Use IP-based URL if available (Safe for reuse per-ip)
+            if ip:
+                # Handle IPv6 wrapping for URL
+                url_ip = f"[{ip}]" if ':' in ip and not ip.startswith('[') else ip
+                url = f"https://{url_ip}:{port}{path}"
+                
+                # VITAL: Manually set Host header and SNI extension so SSL validation passes
+                headers = DOH_HEADERS.copy()
+                headers['Host'] = host
+                extensions = {'sni_hostname': host}
+            else:
+                # Fallback to hostname if IP not resolved (e.g. bootstrap phase)
+                url = f"https://{host}:{port}{path}"
+                headers = DOH_HEADERS.copy()
+                extensions = {}
+
             try:
+                # httpx uses the 'sni_hostname' extension to validate the cert against the hostname,
+                # even though we are connecting to the IP address in the URL.
                 response = await asyncio.wait_for(
-                    self.doh_client.post(url, content=data, headers=headers),
+                    self.doh_client.post(url, content=data, headers=headers, extensions=extensions),
                     timeout=timeout
                 )
                 
@@ -1078,10 +1105,10 @@ class UpstreamManager:
                     return None
                     
             except asyncio.TimeoutError:
-                logger.debug(f"DoH timeout for {server['host']}")
+                logger.debug(f"DoH timeout for {host} ({ip})")
                 return None
             except Exception as e:
-                logger.debug(f"DoH Error {server['host']} ({server['ip']}): {e}")
+                logger.debug(f"DoH Error {host} ({ip}): {e}")
                 return None
                 
         except ImportError:
@@ -1090,3 +1117,4 @@ class UpstreamManager:
         except Exception as e:
             logger.error(f"DoH setup error: {e}")
             return None
+

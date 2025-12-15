@@ -2,7 +2,7 @@
 # filename: filtering.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 9.4.0 (Fixed CNAME Logic)
+# Version: 9.5.0 (Fix cctld_mode logic)
 # -----------------------------------------------------------------------------
 """
 Filtering Engine with strict rule ordering and action prioritization.
@@ -326,21 +326,28 @@ class RuleEngine:
 
         # 2. GeoIP/ccTLD
         if geoip_lookup and geoip_lookup.cctld_mapper and geoip_lookup.cctld_mapper.enabled:
-            cctld_country = geoip_lookup.cctld_mapper.get_country_from_domain(qname_norm)
+            # Respect configuration: Only check ccTLD if mode is explicitly 'cctld_first'.
+            # 'geoip_only' = Ignore TLDs (Answer only).
+            # 'cctld_geoip' = Hint only (Answer only).
             
-            if cctld_country:
-                locations = geoip_lookup.cctld_mapper.expand_locations(cctld_country)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Query GeoIP Check: {qname_norm} -> {cctld_country} -> Locations: {locations}")
+            cctld_mode = getattr(geoip_lookup, 'cctld_mode', 'geoip_only')
+            
+            if cctld_mode == 'cctld_first':
+                cctld_country = geoip_lookup.cctld_mapper.get_country_from_domain(qname_norm)
                 
-                # Priority: ALLOW > BLOCK > DROP
-                for action in ['ALLOW', 'BLOCK', 'DROP']:
-                    for loc in locations:
-                        if loc in self.query_rules['geoip']:
-                            if self.query_rules['geoip'][loc][action]:
-                                rule, list_name = self.query_rules['geoip'][loc][action][0]
-                                logger.info(f"{'🔇' if action == 'DROP' else ('⛔' if action == 'BLOCK' else '✓')} GEO-IP {action} (Query ccTLD) | Domain: {qname_norm} | TLD: .{qname_norm.split('.')[-1]} | Country: {cctld_country} | Matched: {loc} | Rule: '{rule}' | List: '{list_name}'")
-                                return action, rule, list_name
+                if cctld_country:
+                    locations = geoip_lookup.cctld_mapper.expand_locations(cctld_country)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Query GeoIP Check: {qname_norm} -> {cctld_country} -> Locations: {locations}")
+                    
+                    # Priority: ALLOW > BLOCK > DROP
+                    for action in ['ALLOW', 'BLOCK', 'DROP']:
+                        for loc in locations:
+                            if loc in self.query_rules['geoip']:
+                                if self.query_rules['geoip'][loc][action]:
+                                    rule, list_name = self.query_rules['geoip'][loc][action][0]
+                                    logger.info(f"{'🔇' if action == 'DROP' else ('⛔' if action == 'BLOCK' else '✓')} GEO-IP {action} (Query ccTLD) | Domain: {qname_norm} | TLD: .{qname_norm.split('.')[-1]} | Country: {cctld_country} | Matched: {loc} | Rule: '{rule}' | List: '{list_name}'")
+                                    return action, rule, list_name
 
         # 3. Regex
         # Priority: ALLOW > BLOCK > DROP
@@ -387,9 +394,8 @@ class RuleEngine:
 
         # 3. GeoIP
         if ip_str and geoip_lookup and geoip_lookup.enabled:
-            # Note: We do NOT use domain hint for CCTLD here as that's covered in Query rules.
-            # This is strictly for the IP's location.
-            geo_data, _ = geoip_lookup.lookup_with_domain_hint(ip_str, None)
+            # Use domain_hint to support 'cctld_geoip' mode (disambiguate IP location using TLD)
+            geo_data, _ = geoip_lookup.lookup_with_domain_hint(ip_str, domain_hint)
             
             if geo_data:
                 applicable_locations = set()
