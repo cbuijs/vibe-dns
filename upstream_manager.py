@@ -2,13 +2,12 @@
 # filename: upstream_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 6.8.0 (Fixed Mode Selection Logic)
+# Version: 7.0.0 (Enhanced Logging)
 # -----------------------------------------------------------------------------
 """
 Upstream DNS Server Manager with Priority Support & Strict DoH IP Targeting.
 Includes configurable connection reuse and detailed connection logging.
 Now features auto-retry for stale reused connections.
-FIXED: All mode selections (random, roundrobin, sticky, none) now work correctly.
 """
 
 import asyncio
@@ -49,7 +48,8 @@ DOH_HEADERS = {
 
 
 class CircuitBreaker:
-    def __init__(self, failure_threshold=3, recovery_timeout=30, half_open_max_calls=1):
+    def __init__(self, name="Unknown", failure_threshold=3, recovery_timeout=30, half_open_max_calls=1):
+        self.name = name  # Server ID / Full URL
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.half_open_max_calls = half_open_max_calls
@@ -66,7 +66,7 @@ class CircuitBreaker:
             if time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = 'HALF_OPEN'
                 self.half_open_calls = 0
-                logger.debug("Circuit breaker entering HALF_OPEN state")
+                logger.info(f"Circuit breaker for {self.name} entering HALF_OPEN state (Probing...)")
                 return True
             return False
         elif self.state == 'HALF_OPEN':
@@ -78,7 +78,7 @@ class CircuitBreaker:
     
     def record_success(self):
         if self.state == 'HALF_OPEN':
-            logger.info("Circuit breaker recovery successful, returning to CLOSED state")
+            logger.info(f"Circuit breaker for {self.name} recovery SUCCESSFUL. State: CLOSED")
             self.state = 'CLOSED'
             self.failure_count = 0
         elif self.state == 'CLOSED':
@@ -89,10 +89,11 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         
         if self.state == 'HALF_OPEN':
-            logger.warning("Circuit breaker recovery failed, returning to OPEN state")
+            logger.warning(f"Circuit breaker for {self.name} recovery FAILED. State: OPEN")
             self.state = 'OPEN'
         elif self.failure_count >= self.failure_threshold:
-            logger.warning(f"Circuit breaker opening after {self.failure_count} failures")
+            if self.state != 'OPEN':
+                logger.warning(f"Circuit breaker for {self.name} OPENING after {self.failure_count} failures")
             self.state = 'OPEN'
 
 
@@ -311,10 +312,11 @@ class UpstreamManager:
             for server in self.bootstrappers:
                 try:
                     data = None
+                    server_url = f"{server['proto']}://{server['ip']}:{server['port']}"
                     if server['proto'] == 'udp':
-                        data = await self._udp_query(server['ip'], server['port'], pkt, timeout=2)
+                        data = await self._udp_query(server['ip'], server['port'], pkt, timeout=2, server_id=server_url)
                     elif server['proto'] == 'tcp':
-                        data = await self._tcp_query(server['ip'], server['port'], pkt, timeout=2)
+                        data = await self._tcp_query(server['ip'], server['port'], pkt, timeout=2, server_id=server_url)
                     
                     if data:
                         resp = dns.message.from_wire(data)
@@ -325,7 +327,7 @@ class UpstreamManager:
                         if found_ips:
                             break
                 except Exception as e:
-                    logger.debug(f"Bootstrap resolve error for {hostname}: {e}")
+                    logger.debug(f"Bootstrap resolve error for {hostname} via {server['ip']}: {e}")
         
         if not found_ips:
             logger.error(f"Bootstrap resolution failed for '{hostname}' - tried all bootstrap servers")
@@ -429,6 +431,7 @@ class UpstreamManager:
                 
                 if self.circuit_breaker_enabled:
                     self.circuit_breakers[server_id] = CircuitBreaker(
+                        name=server_id,
                         failure_threshold=self.circuit_failure_threshold,
                         recovery_timeout=self.circuit_recovery_timeout
                     )
@@ -436,9 +439,9 @@ class UpstreamManager:
                 self.lb_stats[server_id] = {'history': [], 'avg': float('inf'), 'last_used': 0}
                 
                 if forced_ip:
-                    logger.debug(f"Upstream: {proto.upper()}://{host}:{port} -> {forced_ip} (Group: {group_name}, Priority: {priority})")
+                    logger.debug(f"Upstream: {server_id} -> {forced_ip} (Group: {group_name}, Priority: {priority})")
                 else:
-                    logger.debug(f"Upstream: {proto.upper()}://{host}:{port} (Group: {group_name}, Priority: {priority}, Needs Bootstrap)")
+                    logger.debug(f"Upstream: {server_id} (Group: {group_name}, Priority: {priority}, Needs Bootstrap)")
 
         logger.info(f"Parsed {count} upstream servers from configuration")
 
@@ -473,7 +476,7 @@ class UpstreamManager:
                     resolved_hosts[s['host']] = ips
                 
                 if not ips:
-                    logger.warning(f"Skipping {s['host']} (Resolution failed)")
+                    logger.warning(f"Skipping {s['id']} (Resolution failed)")
                     continue
 
                 children = []
@@ -490,6 +493,7 @@ class UpstreamManager:
                         parent_cb = self.circuit_breakers.get(s['id'])
                         if parent_cb and new_s['id'] not in self.circuit_breakers:
                             new_cb = CircuitBreaker(
+                                name=new_s['id'],
                                 failure_threshold=self.circuit_failure_threshold,
                                 recovery_timeout=self.circuit_recovery_timeout
                             )
@@ -499,6 +503,7 @@ class UpstreamManager:
                             self.circuit_breakers[new_s['id']] = new_cb
                         elif new_s['id'] not in self.circuit_breakers:
                             self.circuit_breakers[new_s['id']] = CircuitBreaker(
+                                name=new_s['id'],
                                 failure_threshold=self.circuit_failure_threshold,
                                 recovery_timeout=self.circuit_recovery_timeout
                             )
@@ -538,6 +543,7 @@ class UpstreamManager:
                     })
                     if self.circuit_breaker_enabled:
                         self.circuit_breakers[fallback_id] = CircuitBreaker(
+                            name=fallback_id,
                             failure_threshold=self.circuit_failure_threshold,
                             recovery_timeout=self.circuit_recovery_timeout
                         )
@@ -674,8 +680,7 @@ class UpstreamManager:
                 return
 
             for i, s in enumerate(targets, 1):
-                proto = s['proto'].upper()
-                logger.debug(f"#{i} {proto} {s['host']} ({s['ip']}) Latency: {s['latency']*1000:.1f}ms")
+                logger.debug(f"#{i} {s['id']} Latency: {s['latency']*1000:.1f}ms")
 
     async def _measure_latency(self, server):
         start = time.time()
@@ -685,14 +690,15 @@ class UpstreamManager:
             timeout = 5.0
             
             result = None
+            server_id = server['id']
             if server['proto'] == 'udp':
-                result = await self._udp_query(server['ip'], server['port'], pkt, timeout)
+                result = await self._udp_query(server['ip'], server['port'], pkt, timeout, server_id=server_id)
             elif server['proto'] == 'tcp':
-                result = await self._tcp_query(server['ip'], server['port'], pkt, timeout)
+                result = await self._tcp_query(server['ip'], server['port'], pkt, timeout, server_id=server_id)
             elif server['proto'] == 'https':
                 result = await self._doh_query(server, pkt, timeout)
             elif server['proto'] == 'tls':
-                result = await self._dot_query(server['ip'], server['port'], server['host'], pkt, timeout)
+                result = await self._dot_query(server['ip'], server['port'], server['host'], pkt, timeout, server_id=server_id)
             
             if result:
                 return time.time() - start
@@ -853,15 +859,16 @@ class UpstreamManager:
                 
                 ip = server['ip']
                 port = server['port']
+                server_id = server['id']
                 
                 if server['proto'] == 'udp':
-                    resp = await self._udp_query(ip, port, query_data)
+                    resp = await self._udp_query(ip, port, query_data, server_id=server_id)
                 elif server['proto'] == 'tcp':
-                    resp = await self._tcp_query(ip, port, query_data)
+                    resp = await self._tcp_query(ip, port, query_data, server_id=server_id)
                 elif server['proto'] == 'https':
                     resp = await self._doh_query(server, query_data)
                 elif server['proto'] == 'tls':
-                    resp = await self._dot_query(ip, port, server['host'], query_data)
+                    resp = await self._dot_query(ip, port, server['host'], query_data, server_id=server_id)
                 
                 if resp:
                     if self.circuit_breaker_enabled and server['id'] in self.circuit_breakers:
@@ -871,7 +878,8 @@ class UpstreamManager:
                         await self._update_sticky_map(client_ip, server['id'])
                     
                     dur = (time.time() - start_t) * 1000
-                    log.info(f"Forwarded {query_info} -> {server['proto'].upper()}://{server['host']} ({ip}) | {dur:.2f}ms")
+                    # Enhanced logging with full Server URL
+                    log.info(f"Forwarded {query_info} -> {server_id} ({dur:.2f}ms)")
                     return resp
                 else:
                     if self.circuit_breaker_enabled and server['id'] in self.circuit_breakers:
@@ -881,7 +889,7 @@ class UpstreamManager:
                 if self.circuit_breaker_enabled and server['id'] in self.circuit_breakers:
                     self.circuit_breakers[server['id']].record_failure()
                 
-                log.warning(f"Upstream forward error {server['host']}: {e}")
+                log.warning(f"Upstream forward error {server['id']}: {e}")
                 continue
                 
         log.error("All selected upstream servers failed to respond")
@@ -891,8 +899,9 @@ class UpstreamManager:
     # TRANSPORT: UDP & TCP
     # =========================================================================
 
-    async def _udp_query(self, ip, port, data, timeout=5):
+    async def _udp_query(self, ip, port, data, timeout=5, server_id=None):
         loop = asyncio.get_running_loop()
+        server_label = server_id if server_id else f"udp://{ip}:{port}"
         try:
             ip_obj = ipaddress.ip_address(ip)
             family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
@@ -904,10 +913,11 @@ class UpstreamManager:
             sock.close()
             return resp
         except Exception as e:
-            logger.debug(f"UDP Error {ip}: {e}")
+            logger.debug(f"UDP Error {server_label}: {e}")
             return None
 
-    async def _tcp_query(self, ip, port, data, timeout=5):
+    async def _tcp_query(self, ip, port, data, timeout=5, server_id=None):
+        server_label = server_id if server_id else f"tcp://{ip}:{port}"
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
             writer.write(len(data).to_bytes(2, 'big') + data)
@@ -919,22 +929,23 @@ class UpstreamManager:
             await writer.wait_closed()
             return resp
         except Exception as e:
-            logger.debug(f"TCP Error {ip}: {e}")
+            logger.debug(f"TCP Error {server_label}: {e}")
             return None
 
     # =========================================================================
     # TRANSPORT: DoT (DNS-over-TLS)
     # =========================================================================
 
-    async def _dot_query(self, ip, port, host, data, timeout=5):
+    async def _dot_query(self, ip, port, host, data, timeout=5, server_id=None):
         if self.connection_reuse:
-            return await self._dot_query_reusing(ip, port, host, data, timeout)
+            return await self._dot_query_reusing(ip, port, host, data, timeout, server_id)
         else:
-            return await self._dot_query_oneshot(ip, port, host, data, timeout)
+            return await self._dot_query_oneshot(ip, port, host, data, timeout, server_id)
 
-    async def _dot_query_oneshot(self, ip, port, host, data, timeout=5):
+    async def _dot_query_oneshot(self, ip, port, host, data, timeout=5, server_id=None):
         """Standard DoT query with a fresh connection per request"""
-        logger.debug(f"DEBUG: DoT Connection OPEN to {host} ({ip})")
+        server_label = server_id if server_id else f"tls://{host}:{port}"
+        logger.debug(f"DEBUG: DoT Connection OPEN to {server_label}")
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port, ssl=self.ssl_context, server_hostname=host),
@@ -950,16 +961,18 @@ class UpstreamManager:
                 resp = await asyncio.wait_for(reader.readexactly(length), timeout)
                 return resp
             finally:
-                logger.debug(f"DEBUG: DoT Connection CLOSE to {host} ({ip})")
+                logger.debug(f"DEBUG: DoT Connection CLOSE to {server_label}")
                 writer.close()
                 await writer.wait_closed()
         except Exception as e:
-            logger.debug(f"DoT Oneshot Error {host} ({ip}): {e}")
+            logger.debug(f"DoT Oneshot Error {server_label}: {e}")
             return None
 
-    async def _dot_query_reusing(self, ip, port, host, data, timeout=5):
+    async def _dot_query_reusing(self, ip, port, host, data, timeout=5, server_id=None):
         """Pooled DoT query with connection reuse and smart retry"""
         key = (ip, port, host)
+        server_label = server_id if server_id else f"tls://{host}:{port}"
+
         async with self._dot_locks[key]:
             for attempt in range(2):
                 connection = self._dot_pool.get(key)
@@ -967,14 +980,14 @@ class UpstreamManager:
                 if connection:
                     reader, writer = connection
                     if writer.is_closing():
-                        logger.debug(f"DEBUG: DoT Connection STALE to {host} ({ip}) - removing")
+                        logger.debug(f"DEBUG: DoT Connection STALE to {server_label} - removing")
                         del self._dot_pool[key]
                         connection = None
 
                 is_reused = (connection is not None)
 
                 if not connection:
-                    logger.debug(f"DEBUG: DoT Connection OPEN to {host} ({ip})")
+                    logger.debug(f"DEBUG: DoT Connection OPEN to {server_label}")
                     try:
                         reader, writer = await asyncio.wait_for(
                             asyncio.open_connection(ip, port, ssl=self.ssl_context, server_hostname=host),
@@ -983,7 +996,7 @@ class UpstreamManager:
                         connection = (reader, writer)
                         self._dot_pool[key] = connection
                     except Exception as e:
-                        logger.debug(f"DoT Connect Error {host} ({ip}): {e}")
+                        logger.debug(f"DoT Connect Error {server_label}: {e}")
                         return None
 
                 reader, writer = connection
@@ -996,11 +1009,11 @@ class UpstreamManager:
                     resp = await asyncio.wait_for(reader.readexactly(length), timeout)
                     
                     if is_reused:
-                        logger.debug(f"DEBUG: DoT Connection REUSE SUCCESS to {host} ({ip})")
+                        logger.debug(f"DEBUG: DoT Connection REUSE SUCCESS to {server_label}")
                     return resp
                     
                 except Exception as e:
-                    logger.debug(f"DoT Error {host} ({ip}) [Reuse={is_reused}]: {e}")
+                    logger.debug(f"DoT Error {server_label} [Reuse={is_reused}]: {e}")
                     
                     try:
                         writer.close()
@@ -1011,7 +1024,7 @@ class UpstreamManager:
                         del self._dot_pool[key]
                     
                     if is_reused and attempt == 0:
-                        logger.debug(f"DEBUG: Retrying DoT query with fresh connection to {host} ({ip})")
+                        logger.debug(f"DEBUG: Retrying DoT query with fresh connection to {server_label}")
                         continue
                     
                     return None
@@ -1037,6 +1050,7 @@ class UpstreamManager:
             host = server['host']
             port = server['port']
             path = server['path']
+            server_id = server.get('id', f"https://{host}:{port}{path}")
             
             if ip:
                 url_ip = f"[{ip}]" if ':' in ip and not ip.startswith('[') else ip
@@ -1052,7 +1066,7 @@ class UpstreamManager:
             for attempt in range(2):
                 try:
                     msg = "KeepAlive" if attempt == 0 else "Retry"
-                    logger.debug(f"DEBUG: DoH Request ({msg}) to {host} ({ip})")
+                    logger.debug(f"DEBUG: DoH Request ({msg}) to {server_id}")
                     
                     response = await asyncio.wait_for(
                         self.doh_client.post(url, content=data, headers=headers, extensions=extensions),
@@ -1062,21 +1076,21 @@ class UpstreamManager:
                     if response.status_code == 200:
                         return response.content
                     else:
-                        logger.debug(f"DoH HTTP {response.status_code} from {url}")
+                        logger.debug(f"DoH HTTP {response.status_code} from {server_id}")
                         return None
                         
                 except Exception as e:
                     is_network_error = True
                     
                     if attempt == 0 and is_network_error:
-                        logger.debug(f"DoH KeepAlive failed ({e}), retrying...")
+                        logger.debug(f"DoH KeepAlive failed ({e}) to {server_id}, retrying...")
                         continue
                     
-                    logger.debug(f"DoH Error {server['host']}: {e}")
+                    logger.debug(f"DoH Error {server_id}: {e}")
                     return None
                     
         except Exception as e:
-            logger.debug(f"DoH Setup Error {server['host']}: {e}")
+            logger.debug(f"DoH Setup Error {server.get('id', host)}: {e}")
             return None
 
     async def _doh_query_oneshot(self, server, data, timeout=5):
@@ -1088,6 +1102,7 @@ class UpstreamManager:
             host = server['host']
             port = server['port']
             path = server['path']
+            server_id = server.get('id', f"https://{host}:{port}{path}")
             
             if ip:
                 url_ip = f"[{ip}]" if ':' in ip and not ip.startswith('[') else ip
@@ -1100,7 +1115,7 @@ class UpstreamManager:
                 headers = DOH_HEADERS.copy()
                 extensions = {}
 
-            logger.debug(f"DEBUG: DoH Connection OPEN to {host} ({ip})")
+            logger.debug(f"DEBUG: DoH Connection OPEN to {server_id}")
             
             async with httpx.AsyncClient(http2=True, verify=True) as client:
                 response = await asyncio.wait_for(
@@ -1108,18 +1123,18 @@ class UpstreamManager:
                     timeout=timeout
                 )
                 
-                logger.debug(f"DEBUG: DoH Connection CLOSE to {host} ({ip})")
+                logger.debug(f"DEBUG: DoH Connection CLOSE to {server_id}")
                 
                 if response.status_code == 200:
                     return response.content
                 else:
-                    logger.debug(f"DoH HTTP {response.status_code} from {url}")
+                    logger.debug(f"DoH HTTP {response.status_code} from {server_id}")
                     return None
                     
         except ImportError:
             logger.error("httpx is required for DoH support. Install with: pip install httpx")
             return None
         except Exception as e:
-            logger.debug(f"DoH Oneshot Error {server['host']}: {e}")
+            logger.debug(f"DoH Oneshot Error {server.get('id', host)}: {e}")
             return None
 
