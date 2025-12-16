@@ -2,11 +2,11 @@
 # filename: config_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 3.4.0 (Added Bootstrap Mode Validation)
+# Version: 3.5.0 (Distributed Mode Support)
 # -----------------------------------------------------------------------------
 """
 Configuration Validation Module - Complete coverage for all config options.
-Now supports connection reuse validation.
+Now supports connection reuse validation and distributed upstream mode.
 """
 
 import re
@@ -232,8 +232,8 @@ class ConfigValidator:
                 self.errors.append("upstream: Must be a dictionary")
             return
 
-        # Check mode
-        valid_modes = ['none', 'random', 'roundrobin', 'fastest', 'failover', 'sticky', 'loadbalance']
+        # Check mode - Added 'distributed'
+        valid_modes = ['none', 'random', 'roundrobin', 'fastest', 'failover', 'sticky', 'loadbalance', 'distributed']
         mode = upstream_cfg.get('mode', 'fastest')
         if mode not in valid_modes:
             self.errors.append(f"upstream.mode: Invalid mode '{mode}', must be one of {valid_modes}")

@@ -2,12 +2,12 @@
 # filename: upstream_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 7.3.0 (Enhanced Logging)
+# Version: 7.4.0 (Distributed Mode)
 # -----------------------------------------------------------------------------
 """
 Upstream DNS Server Manager with Priority Support & Strict DoH IP Targeting.
 Includes configurable connection reuse and detailed connection logging.
-Now features configurable bootstrap IP resolution (IPv4/IPv6/Auto) with verbose logging.
+Now features 'distributed' mode and live latency tracking.
 """
 
 import asyncio
@@ -808,7 +808,7 @@ class UpstreamManager:
             return None
 
     # =========================================================================
-    # FORWARDING - MAIN ENTRY POINT (FIXED)
+    # FORWARDING - MAIN ENTRY POINT
     # =========================================================================
 
     async def forward_query(self, query_data, qid=0, client_ip="Unknown", upstream_group="Default", req_logger=None):
@@ -838,7 +838,7 @@ class UpstreamManager:
             except:
                 pass
 
-        # --- SERVER SELECTION (FIXED) ---
+        # --- SERVER SELECTION ---
         selected = None
         
         # Handle sticky mode first - check if client already has a pinned server
@@ -911,7 +911,43 @@ class UpstreamManager:
                             snapshot_stats[s['id']] = self.lb_stats.get(s['id'], {}).get('avg', float('inf'))
                     candidates.sort(key=lambda x: (x.get('priority', 100), snapshot_stats.get(x['id'], 999.0)))
                     selected = candidates[:3]
+
+                elif self.mode == 'distributed':
+                    # Weighted distribution: Low Latency + High Staleness = Better Score
+                    now = time.time()
+                    scored_candidates = []
                     
+                    async with self._stats_lock:
+                        for s in candidates:
+                            sid = s['id']
+                            stats = self.lb_stats.get(sid, {})
+                            
+                            # 1. Get Average Latency (use 0.1s as baseline if missing)
+                            avg_lat = stats.get('avg', s.get('latency', 0.1))
+                            if avg_lat <= 0: avg_lat = 0.001
+                            
+                            # 2. Calculate Staleness (Time since last use)
+                            last_used = stats.get('last_used', 0)
+                            staleness = now - last_used
+                            
+                            # 3. Calculate Score
+                            # Logic: Artificial latency reduction based on staleness.
+                            # Every 60 seconds of staleness reduces the "effective" latency score by 50%.
+                            # This floats rarely used servers to the top.
+                            staleness_factor = 1.0 + (staleness / 60.0)
+                            
+                            # Priority penalty (higher priority value = worse score)
+                            prio_penalty = s.get('priority', 100) / 100.0
+                            if prio_penalty <= 0: prio_penalty = 1.0
+
+                            # Lower Score is Better
+                            score = (avg_lat * prio_penalty) / staleness_factor
+                            scored_candidates.append((score, s))
+                    
+                    # Sort by lowest score
+                    scored_candidates.sort(key=lambda x: x[0])
+                    selected = [x[1] for x in scored_candidates[:3]]
+
                 elif self.mode == 'failover':
                     # Sort by priority then latency, try in order
                     candidates.sort(key=lambda x: (x.get('priority', 100), x['latency']))
@@ -949,15 +985,27 @@ class UpstreamManager:
                     resp = await self._dot_query(ip, port, server['host'], query_data, server_id=server_id)
                 
                 if resp:
+                    dur_sec = time.time() - start_t
+                    dur_ms = dur_sec * 1000
+                    
                     if self.circuit_breaker_enabled and server['id'] in self.circuit_breakers:
                         self.circuit_breakers[server['id']].record_success()
                     
                     if self.mode == 'sticky':
                         await self._update_sticky_map(client_ip, server['id'])
                     
-                    dur = (time.time() - start_t) * 1000
-                    # Enhanced logging with full Server URL
-                    log.info(f"Forwarded {query_info} -> {server_id} ({dur:.2f}ms)")
+                    # --- NEW: Live Statistic Update ---
+                    if self.mode in ['distributed', 'loadbalance', 'fastest']:
+                        async with self._stats_lock:
+                            stats = self.lb_stats.get(server_id)
+                            if stats:
+                                stats['history'].append(dur_sec)
+                                if len(stats['history']) > 10: 
+                                    stats['history'].pop(0)
+                                stats['avg'] = sum(stats['history']) / len(stats['history'])
+                                server['latency'] = stats['avg']
+
+                    log.info(f"Forwarded {query_info} -> {server_id} ({dur_ms:.2f}ms)")
                     return resp
                 else:
                     if self.circuit_breaker_enabled and server['id'] in self.circuit_breakers:

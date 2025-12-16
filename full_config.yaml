@@ -111,6 +111,7 @@ upstream:
   # Load Balancing Strategy:
   # - fastest:     Use server with lowest latency (pings periodically)
   # - loadbalance: Distribute based on average response time
+  # - distributed: Weighted distribution based on latency and staleness (ensures all servers are probed)
   # - failover:    Use first server; only switch if it fails
   # - random:      Pick random server per request
   # - roundrobin:  Rotate through servers sequentially
