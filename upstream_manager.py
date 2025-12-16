@@ -2,7 +2,7 @@
 # filename: upstream_manager.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 7.2.0 (Enhanced Bootstrap Logging)
+# Version: 7.3.0 (Enhanced Logging)
 # -----------------------------------------------------------------------------
 """
 Upstream DNS Server Manager with Priority Support & Strict DoH IP Targeting.
@@ -605,16 +605,18 @@ class UpstreamManager:
                             recovery_timeout=self.circuit_recovery_timeout
                         )
 
-        self.last_monitor_time = time.time()
+        # Removed redundant setting of last_monitor_time to time.time() which prevented immediate execution
+        # self.last_monitor_time = time.time() 
         
         logger.info("Running initial performance test to determine real upstream speeds...")
-        await self.check_latencies()
+        # Use force=True to bypass interval check on startup
+        await self.check_latencies(force=True)
         
         await self._log_server_status()
         
         logger.info("Running second performance test for better accuracy...")
         await asyncio.sleep(0.5)
-        await self.check_latencies()
+        await self.check_latencies(force=True)
         await self._log_server_status()
         
         logger.info("Initial performance testing complete, starting monitoring loop")
@@ -629,7 +631,7 @@ class UpstreamManager:
         else:
             logger.info(f"Query-triggered monitoring enabled (checks every {self.monitor_interval}s on demand)")
 
-    async def check_latencies(self):
+    async def check_latencies(self, force=False):
         if self.mode == "none":
             logger.debug("Latency check skipped (mode: none)")
             return
@@ -642,7 +644,7 @@ class UpstreamManager:
             current_time = time.time()
             time_since_last = current_time - self.last_monitor_time
             
-            if time_since_last < (self.monitor_interval * 0.9):
+            if not force and time_since_last < (self.monitor_interval * 0.9):
                 logger.debug(f"Skipping latency check (last check was only {time_since_last:.1f}s ago)")
                 return
             
@@ -670,18 +672,22 @@ class UpstreamManager:
                 
                 for i, result in enumerate(results):
                     lat = 999.0
+                    srv = valid_targets[i]
+                    sid = srv['id']
+                    
                     if not isinstance(result, Exception):
                         lat = result
                         if lat < 900.0:
                             successful_checks += 1
+                            logger.debug(f"  -> {sid}: {lat*1000:.2f}ms")
                         else:
                             failed_checks += 1
+                            logger.debug(f"  -> {sid}: Timeout/Fail")
                     else:
                         failed_checks += 1
+                        logger.debug(f"  -> {sid}: Error {result}")
 
-                    srv = valid_targets[i]
                     srv['latency'] = lat
-                    sid = srv['id']
                     active_ids.add(sid)
                     
                     stats = self.lb_stats.get(sid)
@@ -723,6 +729,12 @@ class UpstreamManager:
                 
                 if top3_changed:
                     logger.info("UPSTREAM SELECTION CHANGED")
+                    for i, s in enumerate(self.servers[:3]):
+                        logger.info(f"  #{i+1}: {s['id']} (Lat: {s['latency']*1000:.1f}ms, Avg: {snapshot_stats.get(s['id'], 999)*1000:.1f}ms)")
+                elif logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Upstream order unchanged. Current Top 3:")
+                    for i, s in enumerate(self.servers[:3]):
+                        logger.debug(f"  #{i+1}: {s['id']} (Lat: {s['latency']*1000:.1f}ms)")
 
     async def _log_server_status(self):
         async with self._servers_lock:
@@ -741,13 +753,14 @@ class UpstreamManager:
 
     async def _measure_latency(self, server):
         start = time.time()
+        server_id = server['id']
+        logger.debug(f"Probing {server_id}...")
         try:
             q = dns.message.make_query(self.test_domain, dns.rdatatype.A)
             pkt = q.to_wire()
             timeout = 5.0
             
             result = None
-            server_id = server['id']
             if server['proto'] == 'udp':
                 result = await self._udp_query(server['ip'], server['port'], pkt, timeout, server_id=server_id)
             elif server['proto'] == 'tcp':
@@ -758,10 +771,14 @@ class UpstreamManager:
                 result = await self._dot_query(server['ip'], server['port'], server['host'], pkt, timeout, server_id=server_id)
             
             if result:
-                return time.time() - start
+                duration = time.time() - start
+                logger.debug(f"Probe {server_id} success: {duration*1000:.2f}ms")
+                return duration
             else:
+                logger.debug(f"Probe {server_id} failed (no response)")
                 return 999.0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Probe {server_id} exception: {e}")
             return 999.0
 
     # =========================================================================
@@ -903,6 +920,10 @@ class UpstreamManager:
                 else:  # 'fastest' or default
                     candidates.sort(key=lambda x: (x.get('priority', 100), x['latency']))
                     selected = candidates[:3]
+                
+                if log.isEnabledFor(logging.DEBUG) and selected:
+                    sel_log = ", ".join([f"{s['id']} ({s['latency']*1000:.1f}ms)" for s in selected])
+                    log.debug(f"Selected upstreams ({self.mode}): {sel_log}")
         
         # --- QUERY EXECUTION ---
         for server in selected:
