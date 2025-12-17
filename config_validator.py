@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filename: config_validator.py
-# Version: 4.0.0 (Recursive Resolution & DNSSEC Support)
+# Version: 4.1.0 (Added QNAME Minimization Support)
 """
 Configuration Validation Module with DoH/DoT and Recursive/DNSSEC support
 """
@@ -279,7 +279,8 @@ class ConfigValidator:
         if enabled is not None and not isinstance(enabled, bool):
             self.errors.append("upstream.recursive.enabled: Must be boolean")
 
-        for bool_key in ['prefer_ipv6']:
+        # Validate QNAME minimization and IPv6 preference
+        for bool_key in ['prefer_ipv6', 'qname_minimization']:
             val = recursive_cfg.get(bool_key)
             if val is not None and not isinstance(val, bool):
                 self.errors.append(f"upstream.recursive.{bool_key}: Must be boolean")

@@ -2,12 +2,11 @@
 # filename: recursive_resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.7 (Verbose Iterative & DNSSEC Logging)
+# Version: 1.1.0 (Added RFC 9156 QNAME Minimization)
 # -----------------------------------------------------------------------------
 """
-Iterative/Recursive DNS resolver that walks the DNS tree from root servers.
-Supports DNSSEC validation and correctly handles CNAME question rewriting.
-Provides verbose logging for monitoring the resolution path and server outcomes.
+Iterative DNS resolver that walks the DNS tree from root servers.
+Supports DNSSEC validation and implements QNAME Minimization (RFC 9156).
 """
 
 import asyncio
@@ -91,15 +90,15 @@ class NSCache:
 
 
 class RecursiveResolver:
-    """Iterative resolver with CNAME logic and verbose resolution logging."""
+    """Iterative resolver with CNAME logic and RFC 9156 QNAME minimization."""
     
-    MAX_REFERRALS = 20
-    MAX_CNAME_CHAIN = 10
+    MAX_REFERRALS = 25
     QUERY_TIMEOUT = 5
     
     def __init__(self, config: dict):
         self.config = config or {}
         self.enabled = self.config.get('enabled', False)
+        self.qname_minimization = self.config.get('qname_minimization', True)
         self.root_hints = RootHintsManager(self.config.get('root_hints', {}))
         self.trust_anchor_manager = TrustAnchorManager(self.config.get('trust_anchors', {}))
         self.dnssec_mode = self.config.get('dnssec', {}).get('mode', 'none')
@@ -150,91 +149,96 @@ class RecursiveResolver:
         chain_length = 0
         original_qname = original_qname or qname
 
+        # State for QNAME Minimization (RFC 9156)
+        target_labels = list(qname.labels)
+        if target_labels and target_labels[-1] == b'': target_labels.pop() # Strip root
+        
+        # Start by querying the TLD via Root
+        current_min_labels = 1
+
         while chain_length < self.MAX_REFERRALS:
             chain_length += 1
             zone_str = str(current_zone)
-            if zone_str in visited_zones:
-                log.warning(f"Loop detected: Zone '{zone_str}' already visited in this path")
+            
+            # Check for loops
+            if zone_str in visited_zones and not self.qname_minimization:
+                log.warning(f"Loop detected: Zone '{zone_str}' already visited")
                 break
             visited_zones.add(zone_str)
             
-            cached_ns = self.ns_cache.get(zone_str)
-            if cached_ns:
-                nameservers = cached_ns
-                log.debug(f"NS Cache hit for {zone_str}: Using cached nameservers")
+            # Determine effective query name for this step
+            if self.qname_minimization and current_min_labels < len(target_labels):
+                sub_labels = target_labels[-current_min_labels:] + [b'']
+                query_name = dns.name.Name(sub_labels)
+                query_type = dns.rdatatype.A # Ping the sub-zone [RFC 9156]
+                log.debug(f"Step {chain_length}: Minimizing -> {query_name} [A] via '{zone_str}'")
+            else:
+                query_name = qname
+                query_type = qtype
+                log.debug(f"Step {chain_length}: Iterating -> {query_name} [{dns.rdatatype.to_text(query_type)}] via '{zone_str}'")
 
-            if not nameservers:
-                log.error(f"Resolution failure: No nameservers found for zone {zone_str}")
-                break
-
-            log.debug(f"Step {chain_length}: Querying zone '{zone_str}' for {qname}")
-            response = await self._query_nameservers(nameservers, qname, qtype, log)
-            
+            # Execute Query
+            response = await self._query_nameservers(nameservers, query_name, query_type, log)
             if not response:
-                log.warning(f"Step {chain_length}: No response from any nameserver for zone {zone_str}")
+                log.warning(f"Step {chain_length}: No response from zone '{zone_str}'")
                 break
             
-            rcode_text = dns.rcode.to_text(response.rcode())
-            log.info(f"Received {rcode_text} from zone '{zone_str}' ({len(response.answer)} answers, {len(response.authority)} auth, {len(response.additional)} add)")
-
-            # Check Answer
-            if response.answer:
+            # 1. Handle Referrals (Delegations)
+            referral = self._extract_referral(response, query_name)
+            if referral:
+                new_zone, new_ns = referral
+                log.info(f"Referral from '{zone_str}' to zone '{new_zone}' ({len(new_ns)} NS)")
+                current_zone, nameservers = new_zone, new_ns
+                self.ns_cache.put(str(current_zone), nameservers, self._get_min_ttl(response.authority))
+                
+                if self.qname_minimization:
+                    # We found a deeper delegation, update minimization progress
+                    current_min_labels = max(current_min_labels, len(new_zone.labels))
+                continue
+            
+            # 2. Handle CNAMEs (Only on final target query)
+            if query_name == qname and response.answer:
                 found_cname = False
                 for rrset in response.answer:
                     if rrset.rdtype == dns.rdatatype.CNAME and rrset.name == qname:
-                        if qtype == dns.rdatatype.CNAME:
-                            # User wanted the CNAME itself
-                            break
+                        if qtype == dns.rdatatype.CNAME: break # Final answer is CNAME
                         
                         target = rrset[0].target
                         log.info(f"Following CNAME: {qname} -> {target}")
                         accumulated_cnames.append(rrset)
                         
-                        # Restart resolution from root for the new target
-                        qname = target
-                        current_zone = dns.name.root
-                        nameservers = self._get_root_nameservers()
-                        visited_zones.clear()
-                        found_cname = True
-                        break
+                        # Restart iterative logic for the new target
+                        return await self._resolve_iterative(target, qtype, log, validate, original_qname)
                 
-                if not found_cname:
-                    log.info(f"Resolution successful for {original_qname}")
-                    return await self._finalize(response, original_qname, accumulated_cnames, qtype, log, validate), chain_length
-                else:
-                    # Continue loop with new qname
-                    continue
+                # No CNAME, or CNAME was the answer we wanted
+                return await self._finalize(response, original_qname, accumulated_cnames, qtype, log, validate), chain_length
 
-            # Check Referral
-            referral = self._extract_referral(response, qname)
-            if referral:
-                new_zone, new_ns = referral
-                log.info(f"Referral from '{zone_str}' to zone '{new_zone}' ({len(new_ns)} nameservers provided)")
-                current_zone, nameservers = new_zone, new_ns
-                self.ns_cache.put(str(current_zone), nameservers, self._get_min_ttl(response.authority))
+            # 3. Handle intermediate minimization answers
+            if self.qname_minimization and query_name != qname:
+                log.debug(f"Minimization info: {dns.rcode.to_text(response.rcode())} for {query_name}")
+                # Name exists or NXDOMAIN, proceed deeper
+                current_min_labels += 1
                 continue
-            
-            # Empty response or NXDOMAIN without referral
+
+            # 4. Final Data, Empty Answer or NXDOMAIN
             return await self._finalize(response, original_qname, accumulated_cnames, qtype, log, validate), chain_length
 
         return None, chain_length
 
     async def _finalize(self, response, original_qname, accumulated_cnames, qtype, log, validate):
-        """Assemble the final message and perform DNSSEC validation."""
-        # Restore the original question for client compatibility
+        """Assemble final message and run validation."""
         response.question = [dns.rrset.RRset(original_qname, dns.rdataclass.IN, qtype)]
-        
         if accumulated_cnames:
             response.answer = accumulated_cnames + list(response.answer)
 
         if validate and self.dnssec_validator:
-            log.info(f"Performing DNSSEC validation [Mode: {self.dnssec_mode}] for {original_qname}")
+            log.info(f"DNSSEC validation [Mode: {self.dnssec_mode}] for {original_qname}")
             status, validated = await self.dnssec_validator.validate_response(response, str(original_qname).lower(), qtype, log)
             if validated:
-                log.info(f"DNSSEC validation result: {status.value.upper()}")
+                log.info(f"DNSSEC result: {status.value.upper()}")
                 return validated
             else:
-                log.error(f"DNSSEC validation result: BOGUS/INDETERMINATE - Response blocked")
+                log.error(f"DNSSEC result: BOGUS - Response blocked")
                 return self._make_servfail(original_qname, qtype)
         
         return response
@@ -260,28 +264,18 @@ class RecursiveResolver:
         random.shuffle(ns_list)
         for ns_name, ips in ns_list:
             if not ips:
-                log.debug(f"Resolving out-of-bailiwick IP for nameserver: {ns_name}")
+                log.debug(f"Resolving out-of-bailiwick IP for: {ns_name}")
                 ips = await self._resolve_ns_name(ns_name, log)
-                if not ips:
-                    log.debug(f"Failed to resolve IP for {ns_name}, trying next nameserver")
-                    continue
+                if not ips: continue
             
             for ip in ips:
                 try:
-                    log.debug(f"Attempting query: {qname} via {ns_name} ({ip})")
                     res = await self._send_query(ip, qname, qtype, log)
-                    if res:
-                        return res
-                except asyncio.TimeoutError:
-                    log.debug(f"Timeout querying {ns_name} ({ip})")
-                    continue
-                except Exception as e:
-                    log.debug(f"Error querying {ns_name} ({ip}): {e}")
-                    continue
+                    if res: return res
+                except: continue
         return None
 
     async def _resolve_ns_name(self, ns_name: str, log):
-        """Helper to resolve nameserver hostnames to IPs without validation."""
         obj = dns.name.from_text(ns_name)
         res, _ = await self._resolve_iterative(obj, dns.rdatatype.A, log, validate=False)
         if res and res.answer:
@@ -290,27 +284,22 @@ class RecursiveResolver:
 
     async def _send_query(self, ip, qname, qtype, log):
         query = dns.message.make_query(qname, qtype, want_dnssec=True)
-        query.flags |= dns.flags.RD
+        query.flags |= dns.flags.RD # Recursive desired
         wire = query.to_wire()
         
         resp_wire = await self._udp_query(ip, wire)
         if resp_wire:
             resp = dns.message.from_wire(resp_wire)
             if resp.flags & dns.flags.TC:
-                log.debug(f"Response from {ip} was truncated, retrying via TCP")
                 resp_wire = await self._tcp_query(ip, wire)
-                if resp_wire:
-                    resp = dns.message.from_wire(resp_wire)
+                if resp_wire: resp = dns.message.from_wire(resp_wire)
             return resp
         return None
 
     async def _raw_query(self, wire: bytes) -> Optional[bytes]:
-        """Handshake for DNSSECValidator to fetch keys/records."""
         try:
             q_msg = dns.message.from_wire(wire)
-            qn = q_msg.question[0].name
-            qt = q_msg.question[0].rdtype
-            log.debug(f"Internal fetch for DNSSEC metadata: {qn} [{dns.rdatatype.to_text(qt)}]")
+            qn, qt = q_msg.question[0].name, q_msg.question[0].rdtype
             res, _ = await self._resolve_iterative(qn, qt, logger, validate=False)
             return res.to_wire() if res else None
         except: return None

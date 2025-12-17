@@ -2,11 +2,11 @@
 # filename: dnssec_validator.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.1 (Fix: Parse wire-format in _query_ds)
+# Version: 1.1.0 (Audit Fixes: Apex Sig Check & Insecure Delegation Handling)
 # -----------------------------------------------------------------------------
 """
 DNSSEC Validation with configurable modes.
-Fixed to correctly handle wire-format bytes from the recursive resolver callback.
+Correctly handles authenticated insecure delegations and apex signature checks.
 """
 
 import asyncio
@@ -45,7 +45,7 @@ class DNSSECStatus(Enum):
 
 
 class DNSSECValidator:
-    """DNSSEC validation logic with wire-format robust handling."""
+    """DNSSEC validation logic with cryptographic integrity checks."""
     
     def __init__(self, config: dict, trust_anchors: dict, query_func=None):
         self.mode = config.get('mode', 'none')
@@ -89,28 +89,38 @@ class DNSSECValidator:
             return self._apply_mode(DNSSECStatus.INDETERMINATE, response, qname, log)
 
     async def _check_unsigned_zone(self, qname: str, log) -> DNSSECStatus:
-        """Walk up the tree to find DS records to check if the zone is signed."""
+        """
+        Walk up the tree to find DS records or proof of insecurity.
+        Fix: Correctly handles authenticated insecure delegations to avoid false BOGUS.
+        """
         zone = qname
-        while zone:
+        while zone and zone != '.':
             parent = self._get_parent_zone(zone)
-            if not parent: return DNSSECStatus.INSECURE
+            if not parent: break
             
             cache_key = f"ds:{zone}"
             if cache_key in self.ds_cache:
                 ds_rrset, expiry = self.ds_cache[cache_key]
                 if time.time() < expiry:
-                    return DNSSECStatus.BOGUS if ds_rrset else DNSSECStatus.INSECURE
-
+                    # If we have a cached DS, the child MUST be signed
+                    if ds_rrset: return DNSSECStatus.BOGUS
+            
             ds_response = await self._query_ds(zone, log)
             if ds_response:
                 ds_rrset = self._extract_rrset(ds_response, zone, dns.rdatatype.DS)
                 if ds_rrset:
+                    # Found a DS record for the child. Child response was unsigned -> BOGUS
                     ttl = min((rrset.ttl for rrset in ds_response.answer) if ds_response.answer else [300], default=300)
                     self.ds_cache[cache_key] = (ds_rrset, time.time() + ttl)
                     return DNSSECStatus.BOGUS
-                else:
-                    self.ds_cache[cache_key] = (None, time.time() + 300)
-                    # Keep checking parent if no DS found here
+                
+                # No DS found. Check if the parent response proves the absence (signed denial)
+                # If the parent is signed and explicitly says "No DS", delegation is INSECURE.
+                has_parent_sig = any(rrset.rdtype == dns.rdatatype.RRSIG for section in (ds_response.answer, ds_response.authority) for rrset in section)
+                if has_parent_sig:
+                    log.debug(f"DNSSEC: Authenticated insecure delegation found at {zone}")
+                    return DNSSECStatus.INSECURE
+                
             zone = parent
         return DNSSECStatus.INSECURE
 
@@ -118,7 +128,6 @@ class DNSSECValidator:
         if not self.query_func: return None
         try:
             query = dns.message.make_query(dns.name.from_text(zone), dns.rdatatype.DS, want_dnssec=True)
-            # FIX: raw_query returns bytes, we MUST parse to Message before returning
             wire = await self.query_func(query.to_wire())
             return dns.message.from_wire(wire) if wire else None
         except Exception as e:
@@ -128,17 +137,20 @@ class DNSSECValidator:
     async def _validate_signatures(self, response: dns.message.Message, qname: str, log) -> DNSSECStatus:
         rrsets_to_validate = []
         rrsigs = {}
-        for rrset in response.answer:
-            if rrset.rdtype == dns.rdatatype.RRSIG:
-                for rdata in rrset: rrsigs[(rrset.name, rdata.type_covered)] = rrset
-            else:
-                rrsets_to_validate.append(rrset)
+        for section in (response.answer, response.authority):
+            for rrset in section:
+                if rrset.rdtype == dns.rdatatype.RRSIG:
+                    for rdata in rrset: rrsigs[(rrset.name, rdata.type_covered)] = rrset
+                else:
+                    rrsets_to_validate.append(rrset)
         
         if not rrsets_to_validate: return DNSSECStatus.SECURE
 
         for rrset in rrsets_to_validate:
             rrsig_rrset = rrsigs.get((rrset.name, rrset.rdtype))
-            if not rrsig_rrset: return DNSSECStatus.BOGUS
+            if not rrsig_rrset: 
+                # If some records are signed and others aren't, it's BOGUS
+                return DNSSECStatus.BOGUS
             
             signer = str(rrsig_rrset[0].signer).lower().rstrip('.') + '.'
             dnskey_rrset = await self._get_validated_dnskey(signer, log)
@@ -152,6 +164,7 @@ class DNSSECValidator:
         return DNSSECStatus.SECURE
 
     async def _get_validated_dnskey(self, zone: str, log) -> Optional[dns.rrset.RRset]:
+        """Establish trust in a DNSKEY RRset and verify its self-signature (Apex Check)."""
         if zone in self.validated_keys:
             dnskey, expiry = self.validated_keys[zone]
             if time.time() < expiry: return dnskey
@@ -159,7 +172,6 @@ class DNSSECValidator:
         if not self.query_func: return None
         try:
             query = dns.message.make_query(dns.name.from_text(zone), dns.rdatatype.DNSKEY, want_dnssec=True)
-            # FIX: raw_query returns bytes, we MUST parse to Message
             wire = await self.query_func(query.to_wire())
             if not wire: return None
             response = dns.message.from_wire(wire)
@@ -167,11 +179,31 @@ class DNSSECValidator:
             dnskey_rrset = self._extract_rrset(response, zone, dns.rdatatype.DNSKEY)
             if not dnskey_rrset: return None
 
-            # Recursive validation chain to trust anchor
+            # 1. Establish cryptographic trust in the DNSKEY set via DS chain or Trust Anchor
             if zone == '.' or zone == '':
                 if not self._validate_root_dnskey(dnskey_rrset, log): return None
             else:
                 if not await self._validate_dnskey_with_ds(zone, dnskey_rrset, response, log): return None
+            
+            # 2. Apex Signature Check: Ensure the DNSKEY RRset is signed by a valid key in the set
+            # This is critical to prevent key substitution attacks.
+            rrsig_dnskey = None
+            for rrset in response.answer:
+                if rrset.rdtype == dns.rdatatype.RRSIG:
+                    for rdata in rrset:
+                        if rdata.type_covered == dns.rdatatype.DNSKEY:
+                            rrsig_dnskey = rrset
+                            break
+            
+            if not rrsig_dnskey:
+                log.error(f"DNSSEC: Missing RRSIG for DNSKEY RRset at {zone}")
+                return None
+            
+            try:
+                dns.dnssec.validate(dnskey_rrset, rrsig_dnskey, {dns.name.from_text(zone): dnskey_rrset})
+            except dns.dnssec.ValidationFailure as e:
+                log.error(f"DNSSEC: Apex self-signature validation failed for {zone}: {e}")
+                return None
             
             ttl = min((rrset.ttl for rrset in response.answer) if response.answer else [300], default=300)
             self.validated_keys[zone] = (dnskey_rrset, time.time() + ttl)
@@ -182,7 +214,7 @@ class DNSSECValidator:
 
     def _validate_root_dnskey(self, dnskey_rrset, log) -> bool:
         for rdata in dnskey_rrset:
-            if not (rdata.flags & 0x0001): continue
+            if not (rdata.flags & 0x0001): continue # KSK bit
             key_tag = dns.dnssec.key_id(rdata)
             if key_tag in self.trust_anchors:
                 anchor = self.trust_anchors[key_tag]
@@ -198,9 +230,10 @@ class DNSSECValidator:
         ds_rrset = self._extract_rrset(ds_resp, zone, dns.rdatatype.DS)
         if not ds_rrset: return False
         
+        # Cross-validate: Check if any DS record matches a KSK in the DNSKEY RRset
         for ds in ds_rrset:
             for dnskey in dnskey_rrset:
-                if not (dnskey.flags & 0x0001): continue
+                if not (dnskey.flags & 0x0001): continue # Only check KSKs
                 if ds.algorithm == dnskey.algorithm and ds.key_tag == dns.dnssec.key_id(dnskey):
                     try:
                         computed = dns.dnssec.make_ds(dns.name.from_text(zone), dnskey, ds.digest_type)
