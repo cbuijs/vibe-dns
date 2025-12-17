@@ -280,6 +280,18 @@
     ],
     "tlds": []
   },
+ "violence_hate": {
+    "keywords": [
+      "blood", "bomb", "death", "die", "execution", "gore", "hate", "kill", "murder", 
+      "nazi", "racist", "shock", "suicide", "terror", "terrorist", "torture", "violence", 
+      "war", "whitepower"
+    ],
+    "regex": [
+      "/(^|\\.)death-[a-z]+\\./",
+      "/(^|\\.)kill(er)?-[0-9a-z]+\\./"
+    ],
+    "tlds": []
+  },
   "weapons": {
     "keywords": [
       "ammo", "armory", "bullet", "defense", "explosive", "firearm", "gun", 
