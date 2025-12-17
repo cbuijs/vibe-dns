@@ -7,7 +7,7 @@ RFC 8484 (DoH) and RFC 7858 (DoT)
 import asyncio
 import ssl
 import logging
-from typing import Optional
+from typing import Optional, List, Union
 from urllib.parse import urlparse, parse_qs
 
 from utils import get_logger
@@ -85,17 +85,26 @@ class DoTServer:
 
 class DoHServer:
     """DNS over HTTPS (RFC 8484) - HTTP/2 ONLY"""
-    def __init__(self, handler, host, port, paths=None, strict_paths=False):
+    def __init__(self, handler, host, port, paths: Union[List[str], str, None] = None, strict_paths: bool = False):
         self.handler = handler
         self.host = host
         self.port = port
-        # Support multiple paths
+        
+        # Normalize and validate paths
         if paths is None:
-            paths = ['/dns-query']
+            self.paths = {'/dns-query'}
         elif isinstance(paths, str):
-            paths = [paths]
-        self.paths = paths
+            self.paths = {paths.strip()}
+        else:
+            self.paths = {p.strip() for p in paths if p and p.strip()}
+            
         self.strict_paths = strict_paths
+        
+        # Ensure fallback if empty
+        if not self.paths:
+            self.paths = {'/dns-query'}
+            
+        logger.debug(f"DoH Initialized: strict_paths={self.strict_paths}, allowed_paths={self.paths}")
 
     async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
@@ -142,6 +151,7 @@ class DoHServer:
                 return
             
             import time
+            import base64
             
             # Initialize HTTP/2 connection
             config = H2Configuration(client_side=False)
@@ -212,14 +222,13 @@ class DoHServer:
                         request_data = stream_info['data']
                         
                         # Parse path
-                        from urllib.parse import urlparse, parse_qs
                         parsed = urlparse(path)
                         request_path = parsed.path
                         
                         # Validate path
                         if request_path not in self.paths:
                             if self.strict_paths:
-                                logger.warning(f"DoH {addr[0]}:{addr[1]} - Stream {stream_id}: Path rejected (strict mode): {request_path}")
+                                logger.warning(f"DoH {addr[0]}:{addr[1]} - Stream {stream_id}: Path rejected (strict mode). Requested: '{request_path}', Allowed: {self.paths}")
                                 # Send 404
                                 response_headers = [
                                     (':status', '404'),
@@ -233,7 +242,7 @@ class DoHServer:
                                 del streams[stream_id]
                                 continue
                             else:
-                                logger.debug(f"DoH {addr[0]}:{addr[1]} - Stream {stream_id}: Path not in list but strict mode disabled")
+                                logger.debug(f"DoH {addr[0]}:{addr[1]} - Stream {stream_id}: Path '{request_path}' not in {self.paths} but strict mode disabled")
                         
                         dns_data = None
                         
@@ -241,7 +250,6 @@ class DoHServer:
                             # GET: dns= parameter in base64url
                             params = parse_qs(parsed.query)
                             if 'dns' in params:
-                                import base64
                                 try:
                                     b64_data = params['dns'][0]
                                     missing_padding = len(b64_data) % 4

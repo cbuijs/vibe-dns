@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filename: server.py
-# Version: 4.7.0 (DoH/DoT Support)
+# Version: 4.7.1 (DoH/DoT Support Fixes)
 """
 Main Server Module with DoH/DoT support
 """
@@ -163,7 +163,7 @@ async def main() -> None:
         config.setdefault('server', {})['bind_ip'] = ["0.0.0.0", "::"]
 
     setup_logger(config)
-    logger.info("Starting DNS Filter Server v4.7.0 (DoH/DoT)")
+    logger.info("Starting DNS Filter Server v4.7.1")
     
     logger.info(">>> Phase 2: Component Initialization")
     
