@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filename: config_validator.py
-# Version: 4.1.0 (Added QNAME Minimization Support)
+# Version: 4.2.1 (Updated QNAME Minimization Validation)
 """
 Configuration Validation Module with DoH/DoT and Recursive/DNSSEC support
 """
@@ -10,7 +10,7 @@ import os
 import ipaddress
 from typing import Dict, List, Tuple, Any, Optional
 from utils import get_logger
-from validation import is_valid_ip, is_valid_cidr, is_valid_domain
+from validation import is_valid_ip, is_valid_domain
 
 logger = get_logger("ConfigValidator")
 
@@ -279,8 +279,16 @@ class ConfigValidator:
         if enabled is not None and not isinstance(enabled, bool):
             self.errors.append("upstream.recursive.enabled: Must be boolean")
 
-        # Validate QNAME minimization and IPv6 preference
-        for bool_key in ['prefer_ipv6', 'qname_minimization']:
+        # Validate QNAME minimization modes
+        qm_mode = recursive_cfg.get('qname_minimization')
+        if qm_mode is not None:
+            if isinstance(qm_mode, str):
+                if qm_mode.lower() not in ['strict', 'relaxed', 'off']:
+                    self.errors.append(f"upstream.recursive.qname_minimization: Invalid mode '{qm_mode}', must be 'strict', 'relaxed', or 'off'")
+            else:
+                self.errors.append("upstream.recursive.qname_minimization: Must be string ('strict', 'relaxed', or 'off')")
+
+        for bool_key in ['prefer_ipv6']:
             val = recursive_cfg.get(bool_key)
             if val is not None and not isinstance(val, bool):
                 self.errors.append(f"upstream.recursive.{bool_key}: Must be boolean")

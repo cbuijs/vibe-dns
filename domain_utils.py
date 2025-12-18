@@ -35,17 +35,3 @@ def normalize_domain(domain: str) -> str:
     
     return domain.strip().lower().rstrip('.')
 
-
-def normalize_domain_for_cache(domain: str, qtype: int) -> tuple:
-    """
-    Create cache key from domain and query type.
-    
-    Args:
-        domain: Domain name (will be normalized)
-        qtype: DNS query type (int)
-        
-    Returns:
-        Tuple suitable for cache key
-    """
-    return (normalize_domain(domain), qtype)
-

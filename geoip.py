@@ -2,7 +2,7 @@
 # filename: geoip.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 6.2.0 (Trust Compiled Database - No Runtime Validation)
+# Version: 6.2.1 (Cleanup: Removed unused match_location)
 # -----------------------------------------------------------------------------
 """
 High-performance GeoIP lookup module with ASN support.
@@ -155,21 +155,6 @@ class GeoIPLookup:
                 cctld = self.cctld_mapper.get_country_from_domain(domain)
         
         return geo, cctld
-
-    def match_location(self, ip_str: str, location_spec: str, domain: str = None) -> bool:
-        """Check if IP matches location - trust compiled regions list"""
-        geo, cctld = self.lookup_with_domain_hint(ip_str, domain)
-        
-        if self.cctld_mode == 'cctld_first' and cctld:
-            if cctld.upper() == location_spec.upper(): 
-                return True
-        
-        if not geo: 
-            return False
-        
-        # Compiler guarantees 'regions' is a valid list
-        regions = set(geo.get('regions', []))
-        return location_spec.upper() in regions
 
     def close(self):
         if self.mm: self.mm.close()

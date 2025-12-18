@@ -215,7 +215,10 @@ upstream:
     # RFC 9156: QNAME Minimization support
     # When enabled, the resolver hides the full query name from authoritative servers
     # by only querying for the labels necessary to find the next delegation point.
-    qname_minimization: true
+    # - strict: Only use minimized qnames, could break resolution.
+    # - relaxed: Use minimizations but fallback to full qnames when ecnountering issues.
+    # - off - No qname minimizations.
+    qname_minimization: "relaxed"
     
     # Prefer IPv6 when querying authoritative nameservers
     prefer_ipv6: false

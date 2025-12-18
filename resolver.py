@@ -2,11 +2,11 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 9.1.0 (Fixed Heuristics Integration)
+# Version: 9.3.0 (Added Schedule Enforcement)
 # -----------------------------------------------------------------------------
 """
-Core DNS Resolution logic with recursive resolution and DNSSEC Support.
-Matches filtering flow: Query Checks -> Heuristics -> Upstream/Recursive -> Answer Checks.
+Core DNS Resolution logic.
+Orchestrates: Cache -> RateLimit -> Policies (with Schedules) -> Filtering -> Upstream -> Answer Checks.
 """
 
 import asyncio
@@ -14,6 +14,7 @@ import time
 import random
 import ipaddress
 import logging
+import datetime
 from typing import Any, Optional, Dict, List, Tuple
 
 import dns.message
@@ -210,7 +211,6 @@ class DNSHandler:
         self.rate_limiter = RateLimiter(self.config.get('rate_limit', {}))
         dedup_cfg = self.config.get('deduplication') or {}
         self.deduplicator = RequestDeduplicator(dedup_cfg.get('enabled', True))
-        self.DEFAULT_POLICY_SCOPE = "DEFAULT_CACHE"
         
         self.decision_cache = DecisionCache(
             size=self.config.get('decision_cache', {}).get('size', 50000),
@@ -218,14 +218,8 @@ class DNSHandler:
         )
         
         server_cfg = self.config.get('server') or {}
-        self.categorization_enabled = self.config.get('categorization_enabled', True)
         self.forward_ecs_mode = server_cfg.get('forward_ecs_mode', 'none').lower()
         self.forward_mac_mode = server_cfg.get('forward_mac_mode', 'none').lower()
-        
-        self.ecs_ipv4_mask = server_cfg.get('ecs_ipv4_mask', 24)
-        self.ecs_ipv6_mask = server_cfg.get('ecs_ipv6_mask', 56)
-        self.ecs_override_ipv4 = server_cfg.get('ecs_override_ipv4')
-        self.ecs_override_ipv6 = server_cfg.get('ecs_override_ipv6')
         
         self.ptr_check_mode = self.config.get('filtering', {}).get('ptr_check', 'none').lower()
         if self.ptr_check_mode not in ['strict', 'none']:
@@ -250,11 +244,10 @@ class DNSHandler:
 
         self._build_client_maps(groups or {})
         
-        # Log resolution mode
         if self.recursive_resolver:
-            logger.info(f"DNSHandler Ready. Mode: Recursive, BlockMode: {self.ip_block_mode}, PTR Check: {self.ptr_check_mode}")
+            logger.info(f"DNSHandler Ready. Mode: Recursive Available, BlockMode: {self.ip_block_mode}")
         else:
-            logger.info(f"DNSHandler Ready. Mode: Forwarding, BlockMode: {self.ip_block_mode}, PTR Check: {self.ptr_check_mode}")
+            logger.info(f"DNSHandler Ready. Mode: Forwarding Only, BlockMode: {self.ip_block_mode}")
 
     def _build_client_maps(self, groups: Dict[str, list]):
         for gname, identifiers in groups.items():
@@ -298,6 +291,34 @@ class DNSHandler:
                 except ValueError:
                     pass
                 self.group_mac_map[ident_lower] = gname
+
+    def _check_schedule(self, schedule_name: str) -> bool:
+        """Check if current time is within a named schedule."""
+        if not schedule_name or schedule_name not in self.schedules:
+            return False
+            
+        schedule_rules = self.schedules[schedule_name]
+        now = datetime.datetime.now()
+        current_day = now.strftime('%a') # Mon, Tue...
+        current_time = now.strftime('%H:%M')
+        
+        for rule in schedule_rules:
+            days = rule.get('days', [])
+            if current_day not in days:
+                continue
+                
+            start = rule.get('start', "00:00")
+            end = rule.get('end', "23:59")
+            
+            # Handle overnight schedules (e.g. 22:00 to 07:00)
+            if start <= end:
+                if start <= current_time <= end:
+                    return True
+            else:
+                if current_time >= start or current_time <= end:
+                    return True
+        
+        return False
 
     def _process_edns_options(self, message, keep_ecs=True, keep_mac=True):
         if message.edns < 0: return []
@@ -344,41 +365,22 @@ class DNSHandler:
         return None
 
     def _get_resolution_mode(self, policy_name: str) -> str:
-        """Determine resolution mode for policy (forward or recursive)"""
         policies = self.config.get('policies', {})
         policy_cfg = policies.get(policy_name, {})
-        
-        # Check policy-specific setting first
         if 'resolution_mode' in policy_cfg:
             return policy_cfg['resolution_mode']
         
-        # Fall back to global recursive.enabled setting
         recursive_cfg = self.config.get('upstream', {}).get('recursive', {})
         if recursive_cfg.get('enabled', False):
             return 'recursive'
         
         return 'forward'
-    
-    def _get_policy_dnssec_mode(self, policy_name: str) -> str:
-        """Get DNSSEC mode for policy (with fallback to global setting)"""
-        policies = self.config.get('policies', {})
-        policy_cfg = policies.get(policy_name, {})
-        
-        # Check policy-specific setting first
-        if 'dnssec_mode' in policy_cfg:
-            return policy_cfg['dnssec_mode']
-        
-        # Fall back to global dnssec.mode setting
-        recursive_cfg = self.config.get('upstream', {}).get('recursive', {})
-        dnssec_cfg = recursive_cfg.get('dnssec', {})
-        return dnssec_cfg.get('mode', 'none')
 
     def create_block_response(self, request, qname, qtype):
         reply = dns.message.make_response(request)
         
         if self.block_ip_opt and qtype in (dns.rdatatype.A, dns.rdatatype.AAAA):
             reply.set_rcode(dns.rcode.NOERROR)
-            
             if self.block_ip_opt.upper() == "NULL":
                 block_ip = "0.0.0.0" if qtype == dns.rdatatype.A else "::"
             else:
@@ -529,9 +531,6 @@ class DNSHandler:
             d_mac_sys = self.mac_mapper.get_mac(client_ip) or "N/A"
             d_mac_edns = edns_mac or "N/A"
             d_srv_ip = meta.get('server_ip') or "N/A"
-            d_srv_port = str(meta.get('server_port')) if meta.get('server_port') else "N/A"
-            d_sni = meta.get('sni') or "N/A"
-            d_doh = meta.get('doh_path') or "N/A"
             
             d_geoip = "N/A"
             if self.geoip and self.geoip.enabled:
@@ -543,91 +542,82 @@ class DNSHandler:
                      for r in geo_data.get('regions', []): parts.add(r)
                      if parts: d_geoip = ",".join(sorted(parts))
             
-            req_logger.debug(
-                f"CLIENT ID DATA | MatchIP: {log_ip} | MAC_Sys: {d_mac_sys} | MAC_EDNS: {d_mac_edns} | "
-                f"SrvIP: {d_srv_ip} | SrvPort: {d_srv_port} | SNI: {d_sni} | DOH-Path: {d_doh} | GeoIP: {d_geoip}"
-            )
+            req_logger.debug(f"CLIENT ID DATA | MatchIP: {log_ip} | GeoIP: {d_geoip}")
 
+        # --- PTR Validation ---
         if qtype == dns.rdatatype.PTR and self.ptr_check_mode == 'strict':
             is_reverse = qname_norm.endswith('.in-addr.arpa') or qname_norm.endswith('.ip6.arpa')
             if is_reverse:
                 extracted_ip = self._extract_ip_from_ptr(qname_str)
                 if not extracted_ip:
-                    req_logger.info(f"⛔ BLOCKED | Reason: Invalid PTR Syntax | Domain: {qname_norm} | Mode: ptr_check=strict | RCODE: {dns.rcode.to_text(self.ptr_check_rcode)}")
+                    req_logger.info(f"⛔ BLOCKED | Reason: Invalid PTR Syntax")
                     reply = dns.message.make_response(request)
                     reply.set_rcode(self.ptr_check_rcode)
                     return reply.to_wire()
 
-        # Client identification and policy lookup
+        # --- Client Identification ---
         group_key = "default"
         policy_name = "ALLOW"
         policy_source = "Default"
         engine = None
         is_explicit_allow = False
 
-        # ... (client identification logic - same as before)
-        # Identify by server port
+        # Identify by server IP/Port/SNI/DoH/IP/CIDR/MAC... (Standard checks)
         srv_port = meta.get('server_port')
         if srv_port and str(srv_port) in self.group_srv_port_map:
             group_key = self.group_srv_port_map[str(srv_port)]
             policy_source = f"ServerPort:{srv_port}"
         
-        # Identify by server IP
         srv_ip = meta.get('server_ip')
         if srv_ip and srv_ip in self.group_srv_ip_map:
             group_key = self.group_srv_ip_map[srv_ip]
             policy_source = f"ServerIP:{srv_ip}"
         
-        # Identify by IP
         if log_ip in self.group_ip_map:
             group_key = self.group_ip_map[log_ip]
             policy_source = f"IP:{log_ip}"
         
-        # Identify by CIDR
         for cidr, gname in self.group_cidr_list:
             if is_ip_in_network(log_ip, cidr):
                 group_key = gname
                 policy_source = f"CIDR:{cidr}"
                 break
         
-        # Identify by MAC
         mac = self.mac_mapper.get_mac(client_ip)
         if mac and mac.lower() in self.group_mac_map:
             group_key = self.group_mac_map[mac.lower()]
             policy_source = f"MAC:{mac}"
         
-        # Identify by EDNS MAC override
         if edns_mac and edns_mac.lower() in self.group_mac_map:
             group_key = self.group_mac_map[edns_mac.lower()]
             policy_source = f"EDNS-MAC:{edns_mac}"
         
-        # Identify by domain pattern
-        for pattern, gname in self.group_domain_list:
-            if qname_norm == pattern or qname_norm.endswith('.' + pattern):
-                group_key = gname
-                policy_source = f"Domain:{pattern}"
-                break
-
-        # Get policy from assignments
+        # Policy Assignment
         if group_key in self.policy_map:
             assignment = self.policy_map[group_key]
             if isinstance(assignment, dict):
-                policy_name = assignment.get('policy', 'ALLOW')
+                # --- Schedule Check ---
+                schedule_name = assignment.get('schedule')
+                if schedule_name and self._check_schedule(schedule_name):
+                    policy_name = assignment.get('schedule_policy', 'BLOCK')
+                    policy_source = f"Schedule:{schedule_name}"
+                    req_logger.info(f"🕒 SCHEDULE ACTIVE | Group: {group_key} | Schedule: {schedule_name} | Policy: {policy_name}")
+                else:
+                    policy_name = assignment.get('policy', 'ALLOW')
             else:
                 policy_name = assignment
         
-        # Check for group default action
+        # Default Action override if not already set by schedule
         if group_key in self.group_default_actions:
             default_action = self.group_default_actions[group_key]
-            if policy_name == "ALLOW":
+            if policy_name == "ALLOW" and "Schedule" not in policy_source:
                 policy_name = default_action
                 policy_source = f"GroupDefault:{group_key}"
         
-        # Get rule engine for policy
         if policy_name in self.rule_engines:
             engine = self.rule_engines[policy_name]
 
-        # Check decision cache
+        # --- Decision Cache Check ---
         cached_decision = self.decision_cache.get_decision(qname_norm, qtype, group_key, policy_name)
         if cached_decision:
             action = cached_decision.get('action')
@@ -640,7 +630,7 @@ class DNSHandler:
             elif action == 'ALLOW':
                 is_explicit_allow = True
 
-        # Check DNS Cache
+        # --- DNS Cache Check ---
         cache_key = (qname_norm, qtype, group_key, policy_name)
         cached_msg, ttl_remain, hits = self.cache.get_dns(qname_norm, qtype, group=group_key, scope=policy_name)
         if cached_msg:
@@ -651,10 +641,19 @@ class DNSHandler:
                 asyncio.create_task(self._resolve_upstream(qname_norm, qtype, data, qid, None, policy_name, request, client_ip, req_logger, group_key, is_explicit_allow))
             self.round_robin_answers(cached_msg, req_logger)
             self._log_response(cached_msg, req_logger)
+            
+            # --- Rate Limit Check (Post-Cache) ---
+            # Even for cached hits, we track rate to protect the socket buffer/CPU
+            limit_action = self.rate_limiter.check(log_ip, meta.get('proto', 'udp'))
+            if limit_action == "DROP": 
+                req_logger.warning("Rate Limit Exceeded (Cached): Dropping")
+                return None
+            
             return cached_msg.to_wire()
         else:
             req_logger.debug(f"CACHE MISS [{group_key}/{policy_name}]: {qname_norm}")
 
+        # --- Rate Limit Check (Pre-Processing) ---
         limit_action = self.rate_limiter.check(log_ip, meta.get('proto', 'udp'))
         if limit_action == "DROP": 
             req_logger.warning("Rate Limit Exceeded: Dropping query")
@@ -665,51 +664,58 @@ class DNSHandler:
             reply.flags |= dns.flags.TC
             return reply.to_wire()
 
+        # --- Policy Enforcement ---
         if policy_name == "BLOCK":
-            req_logger.info(f"⛔ BLOCKED | Reason: {policy_source} | Group: {group_key} | Policy: BLOCK")
+            req_logger.info(f"⛔ BLOCKED | Reason: Policy Enforced BLOCK ({policy_source})")
             self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': policy_source, 'rule': 'N/A', 'list': policy_source})
             return self.create_block_response(request, q.name, qtype).to_wire()
         elif policy_name == "DROP":
-            req_logger.info(f"🔇 DROPPED | Reason: {policy_source} | Group: {group_key} | Policy: DROP")
+            req_logger.info(f"🔇 DROPPED | Reason: Policy Enforced DROP ({policy_source})")
             self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Policy', 'rule': 'N/A', 'list': policy_source})
             return None
 
-        # Domain/category filtering
+        # --- Filtering Engine (Queries) ---
         if engine:
+            # Check Types
             type_action, type_reason, type_list = engine.check_type(qtype)
             if type_action == "DROP":
-                req_logger.info(f"🔇 DROPPED | Reason: {type_reason} | Type: {dns.rdatatype.to_text(qtype)}")
+                req_logger.info(f"🔇 DROPPED | Reason: {type_reason}")
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': type_reason, 'rule': 'N/A', 'list': type_list})
                 return None
             elif type_action == "BLOCK":
-                req_logger.info(f"⛔ BLOCKED | Reason: {type_reason} | Type: {dns.rdatatype.to_text(qtype)}")
+                req_logger.info(f"⛔ BLOCKED | Reason: {type_reason}")
                 self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': type_reason, 'rule': 'N/A', 'list': type_list})
                 return self.create_block_response(request, q.name, qtype).to_wire()
 
             if not is_explicit_allow:
+                # CRITICAL: Now checks Domain/GeoIP/Regex with correct priority
                 action, rule, list_name = engine.is_blocked(qname_norm, geoip_lookup=self.geoip)
-                if action == "BLOCK":
-                    req_logger.info(f"⛔ BLOCKED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
-                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
-                    return self.create_block_response(request, q.name, qtype).to_wire()
-                elif action == "DROP":
-                    req_logger.info(f"🔇 DROPPED | Reason: Domain Rule | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
-                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Domain Rule', 'rule': rule, 'list': list_name})
-                    return None
-                elif action == "ALLOW":
-                    req_logger.info(f"✓ ALLOWED | Reason: Domain Allowlist | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
+                
+                if action == "ALLOW":
+                    req_logger.info(f"✓ ALLOWED | Reason: {list_name} | Rule: '{rule}'")
                     is_explicit_allow = True
-                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Domain Allowlist', 'rule': rule, 'list': list_name})
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Rule Match', 'rule': rule, 'list': list_name})
+                
+                elif action == "BLOCK":
+                    req_logger.info(f"⛔ BLOCKED | Reason: {list_name} | Rule: '{rule}'")
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': 'Rule Match', 'rule': rule, 'list': list_name})
+                    return self.create_block_response(request, q.name, qtype).to_wire()
+                
+                elif action == "DROP":
+                    req_logger.info(f"🔇 DROPPED | Reason: {list_name} | Rule: '{rule}'")
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'DROP', 'reason': 'Rule Match', 'rule': rule, 'list': list_name})
+                    return None
 
-            # === HEURISTICS CHECK (NEW: Fix for ignored heuristics) ===
-            # Only check if heuristics are enabled, not already allowed, and not already blocked
+            # --- Heuristics Check ---
+            # Skipped if explicitly allowed by previous rules
             if not is_explicit_allow and engine.heuristics.enabled:
                 h_action, h_reason, h_score = engine.check_heuristics(qname_norm, qtype)
                 if h_action == "BLOCK":
-                    req_logger.info(f"⛔ BLOCKED | Reason: Heuristics | Domain: {qname_norm} | Score: {h_score} | Details: {h_reason}")
+                    req_logger.info(f"⛔ BLOCKED | Reason: Heuristics | Score: {h_score} | Details: {h_reason}")
                     self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': f"Heuristics ({h_reason})", 'rule': 'Heuristics', 'list': 'Heuristics'})
                     return self.create_block_response(request, q.name, qtype).to_wire()
 
+        # --- Upstream Resolution ---
         dedup_key = (qname_norm, qtype, policy_name, group_key)
         final_msg = await self.deduplicator.get_or_process(dedup_key, 
             lambda: self._resolve_upstream(qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key, is_explicit_allow))
@@ -726,56 +732,41 @@ class DNSHandler:
     async def _resolve_upstream(self, qname_norm, qtype, data, qid, engine, policy_name, request, client_ip, req_logger, group_key="default", is_explicit_allow=False):
         """
         Resolve query via forwarding or recursive resolution.
+        Includes automatic fallback to recursive if forwarding fails.
         """
-        # Determine resolution mode
         resolution_mode = self._get_resolution_mode(policy_name)
+        use_recursive = (resolution_mode == "recursive" and self.recursive_resolver is not None)
         
-        # Check if recursive resolver available and mode is recursive
-        use_recursive = (
-            resolution_mode == "recursive" and 
-            self.recursive_resolver is not None
-        )
-        
-        # Fallback to recursive if no upstream configured but recursive available
-        if not use_recursive and self.recursive_resolver:
-            upstream_group = "Default"
+        # Check config for upstream group presence
+        upstream_group = "Default"
+        if not use_recursive:
             policies = self.config.get('policies', {})
             if policy_name in policies:
                 upstream_group = policies[policy_name].get('upstream_group', 'Default')
             
-            # Check if upstream group has servers
+            # Static Fallback: If no servers in group, force recursive
             upstream_groups = self.config.get('upstream', {}).get('groups', {})
             if upstream_group not in upstream_groups or not upstream_groups[upstream_group].get('servers'):
-                use_recursive = True
-                req_logger.debug(f"No upstream servers for group '{upstream_group}', using recursive")
+                if self.recursive_resolver:
+                    use_recursive = True
+                    req_logger.debug(f"No upstream servers for group '{upstream_group}', switching to recursive")
+                else:
+                    req_logger.error(f"No upstream servers for group '{upstream_group}' and recursive disabled")
+                    return None
         
         response = None
         
         if use_recursive:
-            # === RECURSIVE RESOLUTION ===
             req_logger.debug(f"Resolving recursively: {qname_norm}")
-            
-            response = await self.recursive_resolver.resolve(
-                qname_norm, qtype, req_logger
-            )
-            
+            response = await self.recursive_resolver.resolve(qname_norm, qtype, req_logger)
             if not response:
                 req_logger.warning("Recursive resolution failed (SERVFAIL)")
                 reply = dns.message.make_response(request)
                 reply.set_rcode(dns.rcode.SERVFAIL)
                 return reply
-            
-            # DNSSEC validation is handled by recursive resolver
-            
         else:
-            # === FORWARDING (existing behavior) ===
-            upstream_group = "Default"
-            policies = self.config.get('policies', {})
-            if policy_name in policies:
-                upstream_group = policies[policy_name].get('upstream_group', 'Default')
-            
+            # Prepare Upstream Query
             opts_to_keep = self._process_edns_options(request, keep_ecs=True, keep_mac=True)
-            
             if self.forward_ecs_mode == 'add':
                 try:
                     ip = ipaddress.ip_address(client_ip)
@@ -794,21 +785,27 @@ class DNSHandler:
             try: upstream_query_data = request.to_wire()
             except: upstream_query_data = data
 
+            # Forward
             req_logger.debug(f"Forwarding to Upstream Group: {upstream_group}")
             upstream_data = await self.upstream.forward_query(upstream_query_data, qid=qid, client_ip=client_ip, upstream_group=upstream_group, req_logger=req_logger)
             
-            if not upstream_data:
+            # Dynamic Fallback: If upstream failed completely, try recursive
+            if not upstream_data and self.recursive_resolver:
+                req_logger.warning("Upstream forwarding failed. Fallback to recursive resolver.")
+                response = await self.recursive_resolver.resolve(qname_norm, qtype, req_logger)
+            elif not upstream_data:
                 req_logger.warning("Upstream Resolution Failed (SERVFAIL or Timeout)")
                 reply = dns.message.make_response(request)
                 reply.set_rcode(dns.rcode.SERVFAIL)
                 return reply
-
-            try: response = dns.message.from_wire(upstream_data)
-            except Exception as e:
-                req_logger.warning(f"Upstream sent invalid DNS data: {e}")
-                return None
+            else:
+                try: response = dns.message.from_wire(upstream_data)
+                except Exception as e:
+                    req_logger.warning(f"Upstream sent invalid DNS data: {e}")
+                    return None
         
         # === ANSWER FILTERING ===
+        # CRITICAL: Skipped if query was explicitly allowed (Whitelist wins)
         if not is_explicit_allow and engine and (self.match_answers_globally or engine.has_answer_only_rules()):
             matched_action = None
             for section in (response.answer, response.authority, response.additional):
@@ -843,15 +840,15 @@ class DNSHandler:
                                 break
                     
                     if rrset_action == "DROP":
-                        req_logger.info(f"🔇 DROPPED (Answer Match) | Target: {target_text} | Rule: '{matched_rule}' | List: '{matched_list}'")
+                        req_logger.info(f"🔇 DROPPED (Answer Match) | Target: {target_text} | Rule: '{matched_rule}'")
                         return None
                     elif rrset_action == "BLOCK":
                         if self.ip_block_mode == 'block':
-                            req_logger.info(f"⛔ BLOCKED (Answer Match) | Target: {target_text} | Rule: '{matched_rule}' | List: '{matched_list}' | Mode: block")
+                            req_logger.info(f"⛔ BLOCKED (Answer Match) | Target: {target_text} | Rule: '{matched_rule}' | Mode: block")
                             return self.create_block_response(request, request.question[0].name, qtype)
                         else:
                             matched_action = "BLOCK"
-                            req_logger.info(f"⛔ BLOCKED (Answer Filter) | Stripping record: {target_text} | Rule: '{matched_rule}' | List: '{matched_list}'")
+                            req_logger.info(f"⛔ BLOCKED (Answer Filter) | Stripping record: {target_text} | Rule: '{matched_rule}'")
                             continue
                     safe_rrsets.append(rrset)
                 section.clear()

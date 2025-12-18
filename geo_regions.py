@@ -2,7 +2,7 @@
 # filename: geo_regions.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 1.0.1
+# Version: 1.0.2 (Cleanup: Removed unused helper)
 # -----------------------------------------------------------------------------
 """
 Unified geographic region definitions.
@@ -298,14 +298,6 @@ REGION_DEFINITIONS = {
 def get_continent_name(code: str) -> Optional[str]:
     """Get continent full name from 2-letter code"""
     return CONTINENTS.get(code.upper(), {}).get('name')
-
-def get_continent_code(name: str) -> Optional[str]:
-    """Get continent 2-letter code from full name"""
-    name_upper = name.upper()
-    for code, info in CONTINENTS.items():
-        if info['name'] == name_upper:
-            return code
-    return None
 
 def get_country_continent(country_code: str) -> Optional[str]:
     """Get continent code for country"""

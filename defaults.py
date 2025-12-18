@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
         'connection_reuse': False,
         'recursive': {
             'enabled': False,
-            'qname_minimization': True,
+            'qname_minimization': "relaxed",
             'prefer_ipv6': False,
             'query_timeout': 5,
             'ns_cache_size': 10000,
