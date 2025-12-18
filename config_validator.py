@@ -513,6 +513,34 @@ class ConfigValidator:
         if threshold is not None and (not isinstance(threshold, int) or threshold < 1 or threshold > 5):
             self.errors.append("heuristics.block_threshold: Must be integer 1-5")
 
+        # Entropy thresholds
+        for entropy_key in ['entropy_threshold_high', 'entropy_threshold_suspicious']:
+            val = heur_cfg.get(entropy_key)
+            if val is not None:
+                if not isinstance(val, (int, float)) or val < 0 or val > 6:
+                    self.errors.append(f"heuristics.{entropy_key}: Must be float 0.0-6.0")
+
+        # Typosquat file
+        typosquat_file = heur_cfg.get('typosquat_file')
+        if typosquat_file is not None:
+            if not isinstance(typosquat_file, str):
+                self.errors.append("heuristics.typosquat_file: Must be string path")
+            elif typosquat_file and not os.path.exists(typosquat_file):
+                self.warnings.append(f"heuristics.typosquat_file: File not found '{typosquat_file}'")
+
+        # TOP-N file
+        topn_file = heur_cfg.get('topn_file')
+        if topn_file is not None:
+            if not isinstance(topn_file, str):
+                self.errors.append("heuristics.topn_file: Must be string path")
+            elif topn_file and not os.path.exists(topn_file):
+                self.warnings.append(f"heuristics.topn_file: File not found '{topn_file}'")
+
+        # TOP-N reduction
+        topn_reduction = heur_cfg.get('topn_reduction')
+        if topn_reduction is not None:
+            if not isinstance(topn_reduction, int) or topn_reduction < 0 or topn_reduction > 5:
+                self.errors.append("heuristics.topn_reduction: Must be integer 0-5")
 
 def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     """

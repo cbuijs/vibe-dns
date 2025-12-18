@@ -2,7 +2,7 @@
 # filename: heuristics.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 2.0.0 (RR-Type Aware Heuristics)
+# Version: 2.1.0 (RR-Type Aware Heuristics + TOP-N Whitelist)
 # -----------------------------------------------------------------------------
 """
 Heuristic analysis for identifying suspicious domains based on:
@@ -10,6 +10,7 @@ Heuristic analysis for identifying suspicious domains based on:
 - DGA patterns (Linguistic anomalies)
 - Typosquatting (Levenshtein distance)
 - Length and character composition
+- TOP-N popular domains (score reduction for known-good domains)
 
 Now includes RR-type awareness to prevent false positives for:
 - PTR records (reverse DNS)
@@ -22,7 +23,7 @@ import math
 import os
 import logging
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 from utils import get_logger
 
 logger = get_logger("Heuristics")
@@ -47,78 +48,22 @@ HIGH_RISK_TLDS = {
 }
 
 # Domains that are structurally exempt from heuristics
-# These have legitimately "random-looking" names by design
 EXEMPT_SUFFIXES = {
-    # Reverse DNS
-    'in-addr.arpa',
-    'ip6.arpa',
-    # mDNS/Bonjour/Local
-    'local',
-    'localhost',
-    # Private use (RFC 8375)
-    'home.arpa',
-    'internal',
-    'private',
-    'corp',
-    'lan',
-    'home',
-    # Special use
-    'onion',
-    'test',
-    'example',
-    'invalid',
+    'in-addr.arpa', 'ip6.arpa', 'local', 'localhost', 'home.arpa',
+    'internal', 'private', 'corp', 'lan', 'home', 'onion', 'test',
+    'example', 'invalid',
 }
 
-# Domain patterns that indicate service/infrastructure records
 EXEMPT_PATTERNS = {
-    # Service discovery
-    '_tcp.',
-    '_udp.',
-    '_tls.',
-    '_sctp.',
-    # Email authentication
-    '_domainkey.',
-    '_dkim.',
-    '_dmarc.',
-    '_spf.',
-    # DNSSEC
-    '_dsset.',
-    # SIP/VoIP
-    '_sip.',
-    '_sips.',
-    # XMPP
-    '_xmpp-client.',
-    '_xmpp-server.',
-    # Generic service prefix
-    '_http.',
-    '_https.',
+    '_tcp.', '_udp.', '_tls.', '_sctp.', '_domainkey.', '_dkim.',
+    '_dmarc.', '_spf.', '_dsset.', '_sip.', '_sips.',
+    '_xmpp-client.', '_xmpp-server.', '_http.', '_https.',
 }
 
-# Query types that should skip or reduce heuristics
-# These types often have legitimately unusual domain patterns
 RELAXED_QTYPES = {
-    'PTR',       # Reverse lookups - IP addresses look random
-    'SRV',       # Service records - _service._proto.name format
-    'NAPTR',     # Naming authority - regex patterns in names
-    'DNSKEY',    # DNSSEC keys
-    'DS',        # Delegation signer
-    'NSEC',      # DNSSEC denial
-    'NSEC3',     # DNSSEC denial (hashed)
-    'NSEC3PARAM',# NSEC3 parameters
-    'RRSIG',     # DNSSEC signatures
-    'CDNSKEY',   # Child DNSKEY
-    'CDS',       # Child DS
-    'TLSA',      # TLS authentication
-    'SSHFP',     # SSH fingerprints
-    'CAA',       # Cert authority authorization
-    'SMIMEA',    # S/MIME cert association
-    'OPENPGPKEY',# OpenPGP key
-    'SVCB',      # Service binding
-    'HTTPS',     # HTTPS service binding
-    'TXT',       # Text records (often have underscores)
-    'ANY',       # Meta-query
-    'AXFR',      # Zone transfer
-    'IXFR',      # Incremental zone transfer
+    'PTR', 'SRV', 'NAPTR', 'DNSKEY', 'DS', 'NSEC', 'NSEC3', 'NSEC3PARAM',
+    'RRSIG', 'CDNSKEY', 'CDS', 'TLSA', 'SSHFP', 'CAA', 'SMIMEA',
+    'OPENPGPKEY', 'SVCB', 'HTTPS', 'TXT', 'ANY', 'AXFR', 'IXFR',
 }
 
 
@@ -132,47 +77,101 @@ class DomainHeuristics:
         self.entropy_high = self.config.get('entropy_threshold_high', 3.8)
         self.entropy_suspicious = self.config.get('entropy_threshold_suspicious', 3.2)
 
-        # Initialize Targets
+        # Initialize Targets for typosquatting
         self.targets = set(DEFAULT_TARGETS)
         target_file = self.config.get('typosquat_file')
         if target_file:
             self._load_targets(target_file)
 
+        # TOP-N Popular Domains (whitelist)
+        self.topn_domains: Set[str] = set()
+        self.topn_reduction = self.config.get('topn_reduction', 2)
+        topn_file = self.config.get('topn_file')
+        if topn_file:
+            self._load_topn(topn_file)
+
         if self.enabled:
             logger.info(f"Heuristics enabled: threshold={self.block_threshold}, "
-                       f"entropy_high={self.entropy_high}, entropy_suspicious={self.entropy_suspicious}")
+                       f"entropy_high={self.entropy_high}, entropy_suspicious={self.entropy_suspicious}, "
+                       f"topn_domains={len(self.topn_domains)}, topn_reduction={self.topn_reduction}")
 
     def _load_targets(self, filepath: str):
+        """Load typosquatting targets from file."""
         if not os.path.exists(filepath):
             if self.enabled:
                 logger.warning(f"Typosquat file '{filepath}' not found. Using internal defaults.")
             return
         try:
-            count = 0
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r') as f:
                 for line in f:
                     line = line.strip().lower()
                     if line and not line.startswith('#'):
                         self.targets.add(line)
-                        count += 1
-            logger.info(f"Loaded {count} typosquat targets from {filepath}")
+            logger.info(f"Loaded {len(self.targets)} typosquat targets from '{filepath}'")
         except Exception as e:
-            logger.error(f"Error loading typosquat targets: {e}")
+            logger.error(f"Error loading typosquat file '{filepath}': {e}")
 
-    def _shannon_entropy(self, text: str) -> float:
+    def _load_topn(self, filepath: str):
+        """
+        Load TOP-N popular domains from file.
+        
+        File format: one 2LD domain per line (e.g. 'google.com', 'facebook.com')
+        Lines starting with # are comments.
+        """
+        if not os.path.exists(filepath):
+            if self.enabled:
+                logger.warning(f"TOP-N file '{filepath}' not found. Feature disabled.")
+            return
+        try:
+            count = 0
+            with open(filepath, 'r') as f:
+                for line in f:
+                    line = line.strip().lower()
+                    if line and not line.startswith('#'):
+                        # Normalize: remove trailing dot if present
+                        domain = line.rstrip('.')
+                        self.topn_domains.add(domain)
+                        count += 1
+            logger.info(f"Loaded {count} TOP-N domains from '{filepath}'")
+        except Exception as e:
+            logger.error(f"Error loading TOP-N file '{filepath}': {e}")
+
+    def _is_topn_domain(self, domain: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if domain is in TOP-N list or is a subdomain of one.
+        
+        Args:
+            domain: Normalized domain name (lowercase, no trailing dot)
+            
+        Returns:
+            Tuple of (is_match, matched_domain)
+        """
+        if not self.topn_domains:
+            return False, None
+
+        # Direct match
+        if domain in self.topn_domains:
+            return True, domain
+
+        # Check if it's a subdomain of a TOP-N domain
+        parts = domain.split('.')
+        # Build progressively longer suffixes: a.b.c.com -> b.c.com -> c.com
+        for i in range(1, len(parts)):
+            suffix = '.'.join(parts[i:])
+            if suffix in self.topn_domains:
+                return True, suffix
+
+        return False, None
+
+    def _shannon_entropy(self, s: str) -> float:
         """Calculate Shannon entropy of a string."""
-        if not text:
+        if not s:
             return 0.0
-        length = len(text)
-        counts = {}
-        for char in text:
-            counts[char] = counts.get(char, 0) + 1
-
-        entropy = 0.0
-        for count in counts.values():
-            probability = count / length
-            entropy -= probability * math.log2(probability)
-        return entropy
+        freq = {}
+        for c in s:
+            freq[c] = freq.get(c, 0) + 1
+        length = len(s)
+        return -sum((count / length) * math.log2(count / length) for count in freq.values())
 
     def _levenshtein(self, s1: str, s2: str) -> int:
         """Calculate Levenshtein distance between two strings."""
@@ -180,76 +179,62 @@ class DomainHeuristics:
             return self._levenshtein(s2, s1)
         if len(s2) == 0:
             return len(s1)
-
-        previous_row = range(len(s2) + 1)
+        prev_row = range(len(s2) + 1)
         for i, c1 in enumerate(s1):
-            current_row = [i + 1]
+            curr_row = [i + 1]
             for j, c2 in enumerate(s2):
-                insertions = previous_row[j + 1] + 1
-                deletions = current_row[j] + 1
-                substitutions = previous_row[j] + (c1 != c2)
-                current_row.append(min(insertions, deletions, substitutions))
-            previous_row = current_row
-        return previous_row[-1]
+                insertions = prev_row[j + 1] + 1
+                deletions = curr_row[j] + 1
+                substitutions = prev_row[j] + (c1 != c2)
+                curr_row.append(min(insertions, deletions, substitutions))
+            prev_row = curr_row
+        return prev_row[-1]
 
     def _is_typosquat(self, label: str) -> bool:
-        """Check if label is a typosquat of known targets."""
-        label_len = len(label)
+        """Check if label is potential typosquat of a known target."""
         for target in self.targets:
-            if abs(label_len - len(target)) > 1:
-                continue
-            if label == target:
-                continue
-            if self._levenshtein(label, target) == 1:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"    - Typosquat match: '{label}' ~= '{target}'")
+            distance = self._levenshtein(label, target)
+            threshold = max(1, len(target) // 4)
+            if 0 < distance <= threshold:
                 return True
         return False
 
     def _check_dga(self, label: str) -> Tuple[int, str]:
         """
-        Linguistic analysis to detect DGA (Domain Generation Algorithms).
+        Check for DGA (Domain Generation Algorithm) patterns.
         Returns: (Score Penalty, Reason)
         """
         if len(label) < 5:
             return 0, ""
         if label.isdigit():
-            return 0, ""  # Handled by numeric check
+            return 0, ""
 
         score = 0
         reasons = []
 
-        # 1. Consonant Streak Analysis
-        # 'y' is treated as a vowel here to avoid flagging words like 'rhythms'
+        # Consonant streak analysis
         consonants = "bcdfghjklmnpqrstvwxz"
         max_streak = 0
         current_streak = 0
-
         for char in label:
             if char in consonants:
                 current_streak += 1
                 max_streak = max(max_streak, current_streak)
             else:
                 current_streak = 0
-
-        # English rarely has > 4 consecutive consonants
         if max_streak >= 5:
             score += 2
             reasons.append(f"Consonant streak ({max_streak})")
 
-        # 2. Vowel Ratio Analysis
-        # Count 'y' as vowel here for fairness
+        # Vowel ratio analysis
         vowels = "aeiouy"
         vowel_count = sum(1 for c in label if c in vowels)
         ratio = vowel_count / len(label)
-
-        # Typical English is ~30-40%. DGA is often < 10%
         if ratio < 0.15:
             score += 1
             reasons.append(f"Low vowel ratio ({ratio:.0%})")
 
-        # 3. Repeated Character Analysis
-        # Detects "mashing" like 'aaabbb'
+        # Repeated character analysis
         if re.search(r'(.)\1\1\1', label):
             score += 1
             reasons.append("Repeated chars")
@@ -257,37 +242,27 @@ class DomainHeuristics:
         return score, ", ".join(reasons)
 
     def is_exempt(self, domain: str, qtype_str: Optional[str] = None) -> Tuple[bool, str]:
-        """
-        Check if domain/qtype combination is exempt from heuristics.
-        
-        Returns:
-            Tuple of (is_exempt, reason)
-        """
-        # Check query type exemption
+        """Check if domain/qtype combination is exempt from heuristics."""
         if qtype_str and qtype_str.upper() in RELAXED_QTYPES:
             return True, f"qtype={qtype_str}"
 
         clean = domain.rstrip('.').lower()
-
-        # Check suffix exemption
         parts = clean.split('.')
+
         if parts:
             tld = parts[-1]
             if tld in EXEMPT_SUFFIXES:
                 return True, f"exempt TLD .{tld}"
 
-        # Check for two-part suffix (e.g., home.arpa)
         if len(parts) >= 2:
             suffix = f"{parts[-2]}.{parts[-1]}"
             if suffix in EXEMPT_SUFFIXES:
                 return True, f"exempt suffix .{suffix}"
 
-        # Check pattern exemption (service discovery, etc.)
         for pattern in EXEMPT_PATTERNS:
             if pattern in clean:
                 return True, f"exempt pattern {pattern}"
 
-        # Check for underscore-prefixed labels (service records)
         for part in parts:
             if part.startswith('_'):
                 return True, f"service label _{part[1:]}"
@@ -300,7 +275,7 @@ class DomainHeuristics:
         
         Args:
             domain: The domain name to analyze
-            qtype_str: Optional query type (e.g., 'PTR', 'SRV') for context-aware analysis
+            qtype_str: Optional query type for context-aware analysis
         
         Returns:
             Tuple of (score, list of reasons)
@@ -311,7 +286,7 @@ class DomainHeuristics:
         clean_domain = domain.rstrip('.').lower()
         debug_on = logger.isEnabledFor(logging.DEBUG)
 
-        # Check for exemptions first
+        # Check exemptions first
         is_exempt, exempt_reason = self.is_exempt(clean_domain, qtype_str)
         if is_exempt:
             if debug_on:
@@ -324,6 +299,10 @@ class DomainHeuristics:
 
         if debug_on:
             logger.debug(f"Analyzing heuristics for: {clean_domain}")
+
+        # --- TOP-N Check (early, applies score reduction) ---
+        is_topn, topn_match = self._is_topn_domain(clean_domain)
+        topn_applied = False
 
         # 1. High-Risk TLD
         if parts:
@@ -357,8 +336,6 @@ class DomainHeuristics:
         for part in parts:
             if not part:
                 continue
-
-            # Skip underscore-prefixed labels (service records like _dmarc)
             if part.startswith('_'):
                 continue
 
@@ -370,7 +347,7 @@ class DomainHeuristics:
             hyphens = part.count('-')
             max_hyphens = max(max_hyphens, hyphens)
 
-            # 6. Length
+            # 6. Long label
             if len(part) > 30:
                 score += 1
                 reasons.append(f"Very long label: {part[:10]}...")
@@ -391,7 +368,7 @@ class DomainHeuristics:
                 if debug_on:
                     logger.debug(f"  [+] Penalty: Numeric label '{part}' -> Score: {score}")
 
-            # 9. Elaborated DGA Check
+            # 9. DGA Check
             dga_score, dga_reason = self._check_dga(part)
             if dga_score > 0:
                 score += dga_score
@@ -423,8 +400,17 @@ class DomainHeuristics:
             if debug_on:
                 logger.debug(f"  [+] Penalty: High numeric volume ({digit_count}/{total_len}) -> Score: {score}")
 
+        # --- Apply TOP-N reduction at the end ---
+        if is_topn and score > 0:
+            old_score = score
+            score = max(0, score - self.topn_reduction)
+            topn_applied = True
+            reasons.append(f"TOP-N domain ({topn_match}) -{self.topn_reduction}")
+            if debug_on:
+                logger.debug(f"  [-] TOP-N reduction: {topn_match} -> Score: {old_score} - {self.topn_reduction} = {score}")
+
         final_score = min(5, score)
-        if debug_on and final_score > 0:
+        if debug_on and (final_score > 0 or topn_applied):
             logger.debug(f"  = Final Score: {final_score}/5 | Reasons: {reasons}")
 
         return final_score, reasons

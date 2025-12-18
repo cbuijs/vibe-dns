@@ -211,6 +211,11 @@ upstream:
     # When false (default), the server forwards queries to upstream servers.
     # When true, the server walks the DNS tree from root servers.
     enabled: false
+
+    # RFC 9156: QNAME Minimization support
+    # When enabled, the resolver hides the full query name from authoritative servers
+    # by only querying for the labels necessary to find the next delegation point.
+    qname_minimization: true
     
     # Prefer IPv6 when querying authoritative nameservers
     prefer_ipv6: false
@@ -447,18 +452,22 @@ filtering:
 
 # --- Heuristics Engine ---
 heuristics:
-  # Enable advanced heuristic analysis for suspicious domains
   enabled: true
-  
-  # Score threshold to block a domain (1-5)
   block_threshold: 4
-  
-  # File containing high-value targets for typosquatting checks
   typosquat_file: "typosquat_targets.txt"
-
-  # Entropy Thresholds (Shannon Entropy 0.0 - 6.0+)
   entropy_threshold_high: 3.8
   entropy_threshold_suspicious: 3.2
+  
+  # --- TOP-N Popular Domains (NEW) ---
+  # File containing popular/trusted 2LD domains (one per line)
+  # Sources: Tranco (https://tranco-list.eu/), Majestic Million, Umbrella
+  # Format: clean 2LD domains like 'google.com', 'facebook.com'
+  topn_file: "top-1m-domains.txt"
+  
+  # Score reduction when domain matches TOP-N list
+  # This helps prevent false positives for legitimate high-traffic domains
+  # that might trigger heuristics (e.g. CDN subdomains with random-looking names)
+  topn_reduction: 2
 
 # =============================================================================
 # 9. CLIENT GROUPS

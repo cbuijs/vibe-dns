@@ -117,7 +117,9 @@ DEFAULT_CONFIG = {
         'block_threshold': 4,
         'typosquat_file': 'typosquat_targets.list',
         'entropy_threshold_high': 3.8,
-        'entropy_threshold_suspicious': 3.2
+        'entropy_threshold_suspicious': 3.2,
+        'topn_file': None,
+        'topn_reduction': 2
     },
     'logging': {
         'level': 'INFO',
