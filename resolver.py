@@ -2,11 +2,11 @@
 # filename: resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server (Refactored)
-# Version: 9.0.0 (Recursive Resolution & DNSSEC Support)
+# Version: 9.1.0 (Fixed Heuristics Integration)
 # -----------------------------------------------------------------------------
 """
-Core DNS Resolution logic with recursive resolution and DNSSEC validation.
-Matches filtering flow: Query Checks -> Upstream/Recursive -> Answer Checks.
+Core DNS Resolution logic with recursive resolution and DNSSEC Support.
+Matches filtering flow: Query Checks -> Heuristics -> Upstream/Recursive -> Answer Checks.
 """
 
 import asyncio
@@ -700,6 +700,15 @@ class DNSHandler:
                     req_logger.info(f"✓ ALLOWED | Reason: Domain Allowlist | Domain: {qname_norm} | Rule: '{rule}' | List: '{list_name}' | Policy: '{policy_name}'")
                     is_explicit_allow = True
                     self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'ALLOW', 'reason': 'Domain Allowlist', 'rule': rule, 'list': list_name})
+
+            # === HEURISTICS CHECK (NEW: Fix for ignored heuristics) ===
+            # Only check if heuristics are enabled, not already allowed, and not already blocked
+            if not is_explicit_allow and engine.heuristics.enabled:
+                h_action, h_reason, h_score = engine.check_heuristics(qname_norm, qtype)
+                if h_action == "BLOCK":
+                    req_logger.info(f"⛔ BLOCKED | Reason: Heuristics | Domain: {qname_norm} | Score: {h_score} | Details: {h_reason}")
+                    self.decision_cache.put_decision(qname_norm, qtype, group_key, policy_name, {'action': 'BLOCK', 'reason': f"Heuristics ({h_reason})", 'rule': 'Heuristics', 'list': 'Heuristics'})
+                    return self.create_block_response(request, q.name, qtype).to_wire()
 
         dedup_key = (qname_norm, qtype, policy_name, group_key)
         final_msg = await self.deduplicator.get_or_process(dedup_key, 
