@@ -1,6 +1,6 @@
 # =============================================================================
 # VIBE-DNS FULL CONFIGURATION
-# Version: 5.0.0 (Recursive Resolution & DNSSEC Support)
+# Version: 5.1.0 (Added Recursive Fallback Support)
 # =============================================================================
 # This file documents ALL configuration options with explanations and examples.
 # Copy and modify sections as needed for your deployment.
@@ -229,6 +229,12 @@ upstream:
     # NS cache size (caches discovered nameservers during resolution)
     ns_cache_size: 10000
     ns_cache_ttl: 86400
+
+    # --- Recursive Fallback ---
+    # In hostile networks (captive portals, public wifi), authoritative servers
+    # might be blocked. This enables falling back to forwarding if recursion fails.
+    fallback_enabled: false
+    fallback_group: "Default"
     
     # -------------------------------------------------------------------------
     # Root Hints Configuration

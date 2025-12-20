@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filename: config_validator.py
-# Version: 4.2.1 (Updated QNAME Minimization Validation)
+# Version: 4.3.0 (Recursive Fallback Validation)
 """
 Configuration Validation Module with DoH/DoT and Recursive/DNSSEC support
 """
@@ -288,10 +288,15 @@ class ConfigValidator:
             else:
                 self.errors.append("upstream.recursive.qname_minimization: Must be string ('strict', 'relaxed', or 'off')")
 
-        for bool_key in ['prefer_ipv6']:
+        for bool_key in ['prefer_ipv6', 'fallback_enabled']:
             val = recursive_cfg.get(bool_key)
             if val is not None and not isinstance(val, bool):
                 self.errors.append(f"upstream.recursive.{bool_key}: Must be boolean")
+
+        fallback_group = recursive_cfg.get('fallback_group')
+        if fallback_group is not None:
+            if not isinstance(fallback_group, str):
+                self.errors.append("upstream.recursive.fallback_group: Must be a string")
 
         for int_key in ['query_timeout', 'ns_cache_size', 'ns_cache_ttl']:
             val = recursive_cfg.get(int_key)

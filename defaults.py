@@ -53,6 +53,8 @@ DEFAULT_CONFIG = {
             'query_timeout': 5,
             'ns_cache_size': 10000,
             'ns_cache_ttl': 86400,
+            'fallback_enabled': False,
+            'fallback_group': 'Default',
             'root_hints': {
                 'source': 'builtin',
                 'url': 'https://www.internic.net/domain/named.root',

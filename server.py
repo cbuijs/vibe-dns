@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # filename: server.py
-# Version: 5.0.0 (Recursive Resolution & DNSSEC Support)
+# Version: 5.1.0 (Recursive Resolver with Fallback Group)
 """
 Main Server Module with DoH/DoT support and recursive resolution.
 """
@@ -116,7 +116,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def init_recursive_resolver(config: dict):
+async def init_recursive_resolver(config: dict, upstream_manager: UpstreamManager):
     """Initialize recursive resolver if enabled"""
     recursive_cfg = config.get('upstream', {}).get('recursive', {})
     
@@ -128,14 +128,16 @@ async def init_recursive_resolver(config: dict):
         from recursive_resolver import RecursiveResolver
         
         logger.info(">>> Initializing Recursive Resolver")
-        resolver = RecursiveResolver(recursive_cfg)
+        # Pass upstream_manager to resolver for fallback support
+        resolver = RecursiveResolver(recursive_cfg, upstream_manager)
         
         if not await resolver.initialize():
             logger.error("Failed to initialize recursive resolver")
             return None
         
         dnssec_mode = recursive_cfg.get('dnssec', {}).get('mode', 'none')
-        logger.info(f"Recursive resolution: ENABLED (DNSSEC mode: {dnssec_mode})")
+        fallback_msg = f", Fallback: {recursive_cfg.get('fallback_group', 'None')}" if recursive_cfg.get('fallback_enabled') else ""
+        logger.info(f"Recursive resolution: ENABLED (DNSSEC mode: {dnssec_mode}{fallback_msg})")
         
         return resolver
         
@@ -195,7 +197,7 @@ async def main() -> None:
         config.setdefault('server', {})['bind_ip'] = ["0.0.0.0", "::"]
 
     setup_logger(config)
-    logger.info("Starting DNS Filter Server v5.0.0")
+    logger.info("Starting DNS Filter Server v5.1.0")
     
     logger.info(">>> Phase 2: Component Initialization")
     
@@ -228,8 +230,8 @@ async def main() -> None:
     
     geoip_lookup = GeoIPLookup(config)
     
-    # Initialize recursive resolver (if enabled)
-    recursive_resolver = await init_recursive_resolver(config)
+    # Initialize recursive resolver (if enabled) - PASS upstream manager now
+    recursive_resolver = await init_recursive_resolver(config, upstream)
     
     cache_cfg = config.get('cache', {})
     cache = DNSCache(
@@ -250,7 +252,7 @@ async def main() -> None:
         upstream=upstream, 
         cache=cache,
         geoip=geoip_lookup,
-        recursive_resolver=recursive_resolver  # NEW
+        recursive_resolver=recursive_resolver
     )
 
     logger.info(">>> Phase 3: Starting Listeners")
