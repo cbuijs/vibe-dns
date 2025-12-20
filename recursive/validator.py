@@ -61,17 +61,17 @@ class Validator:
     
     def is_enforcing(self):
         return self.mode in ['standard', 'strict']
-
+    
     async def validate(self, response: dns.message.Message, qname: str, qtype: int, log) -> Tuple[ValidationStatus, Optional[dns.message.Message]]:
         """Validate response"""
         if self.mode == 'none':
             return ValidationStatus.SECURE, response
-    
+        
         log.debug(f"🔐 DNSSEC mode: {self.mode}")
-    
+        
         try:
             status = await self._validate_answer_section(response, log)
-        
+            
             if self.mode == 'log':
                 symbols = {
                     ValidationStatus.SECURE: "✅",
@@ -81,14 +81,14 @@ class Validator:
                 }
                 log.info(f"{symbols.get(status, '?')} DNSSEC {status.value.upper()} for {qname}")
                 return status, response
-        
+            
             if self.mode == 'strict':
                 if status != ValidationStatus.SECURE:
                     log.warning(f"❌ DNSSEC strict mode: rejecting {status.value} response")
                     return status, self._make_servfail(response)
                 response.flags |= dns.flags.AD
                 return status, response
-        
+            
             if self.mode == 'standard':
                 if status in (ValidationStatus.SECURE, ValidationStatus.INSECURE):
                     if status == ValidationStatus.SECURE:
@@ -96,33 +96,33 @@ class Validator:
                     return status, response
                 log.warning(f"❌ DNSSEC standard mode: rejecting {status.value} response")
                 return status, self._make_servfail(response)
-        
+            
             return status, response
-        
+            
         except Exception as e:
             log.error(f"❌ DNSSEC validation exception: {e}")
-            return ValidationStatus.BOGUS, response
-
+            return ValidationStatus.BOGUS, self._make_servfail(response)
+    
     async def _validate_answer_section(self, response, log):
         """Validate only answer section (performance)"""
-    
+        
         if response.rcode() == dns.rcode.NXDOMAIN:
             log.debug("   Validating NXDOMAIN proof (NSEC/NSEC3)")
             return await self._validate_denial(response, log)
-    
+        
         if not response.answer:
             return ValidationStatus.INSECURE
-    
+        
         status = ValidationStatus.SECURE
-    
+        
         for rrset in response.answer:
             if rrset.rdtype in (dns.rdatatype.RRSIG, dns.rdatatype.NSEC, dns.rdatatype.NSEC3):
                 continue
-        
+            
             log.debug(f"   Checking {rrset.name} {dns.rdatatype.to_text(rrset.rdtype)}")
-        
+            
             rrsig = self._find_rrsig(response.answer, rrset.name, rrset.rdtype)
-        
+            
             if not rrsig:
                 # Check if zone should be signed
                 if await self._is_signed_zone(rrset.name, log):
@@ -132,23 +132,23 @@ class Validator:
                     log.debug(f"   ℹ️  No RRSIG (zone appears unsigned)")
                     status = ValidationStatus.INSECURE
                 continue
-        
+            
             # Check algorithm
             if rrsig[0].algorithm in self.disabled_algorithms:
                 log.warning(f"   ❌ Disabled algorithm {rrsig[0].algorithm} in RRSIG")
                 return ValidationStatus.BOGUS
-        
+            
             log.debug(f"   🔑 Verifying signature (signer: {rrsig[0].signer})")
-        
+            
             # Verify signature
             if not await self._verify_signature(rrset, rrsig, log):
                 log.warning(f"   ❌ Invalid RRSIG for {rrset.name}")
                 return ValidationStatus.BOGUS
             else:
                 log.debug(f"   ✅ Signature valid")
-    
+        
         return status
-
+    
     async def _validate_denial(self, response, log):
         """Validate NSEC/NSEC3 denial of existence"""
         for rr in response.authority:
@@ -189,7 +189,7 @@ class Validator:
             return cached
         
         log.debug(f"   🔍 Fetching DNSKEY for {zone_str}")
-
+        
         # Check if already fetching
         if zone_str in self._pending_keys:
             log.debug(f"Joining pending DNSKEY fetch for {zone_str}")

@@ -4,6 +4,7 @@ import asyncio
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict
 from dataclasses import dataclass
+from pathlib import Path
 
 from utils import get_logger
 

@@ -142,27 +142,30 @@ class Iterator:
         
         self.ns_cache = NSCache(config.get('ns_cache_size', 10000))
         self.server_selection = ServerSelection()
+        
+        # NS IP resolution cache (for glueless NS)
+        self._ns_ip_cache = {}
     
     async def resolve(self, qname: dns.name.Name, qtype: int, log=None):
         """Main resolution entry point"""
         log = log or logger
-    
+        
         state = IterState.INIT
         current_qname = qname
         referral_count = 0
         cname_chain = []
         cname_count = 0
-    
+        
         current_zone = dns.name.root
         current_ns = self.root_hints.get_servers(self.prefer_ipv6)
-    
+        
         log.info(f"🔄 Starting recursive resolution: {qname} [{dns.rdatatype.to_text(qtype)}]")
-    
+        
         while state != IterState.FINISHED:
             if referral_count >= self.MAX_REFERRALS:
                 log.error(f"❌ Max referrals ({self.MAX_REFERRALS}) exceeded for {qname}")
                 return self._make_servfail(qname, qtype)
-        
+            
             if state == IterState.INIT:
                 # Check NS cache for delegation
                 cached_zone, cached_ns = self.ns_cache.find_deepest_match(current_qname)
@@ -173,32 +176,32 @@ class Iterator:
                 else:
                     log.info(f"🌐 Starting from root servers")
                 state = IterState.QUERY_NS
-        
+            
             elif state == IterState.QUERY_NS:
                 # Query nameserver
                 query_name = self._minimize_qname(current_qname, current_zone) if self.qname_min != 'off' else current_qname
-            
+                
                 if query_name != current_qname:
                     log.info(f"🔒 QNAME minimization: querying {query_name} instead of {current_qname}")
-            
+                
                 log.info(f"📡 Querying NS for zone {current_zone}")
                 response = await self._query_nameservers(query_name, qtype, current_ns, log)
-            
+                
                 if not response:
                     log.warning(f"⚠️  No response from NS for {current_zone}")
                     return self._make_servfail(qname, qtype)
-            
+                
                 # Check response
                 rcode = response.rcode()
                 log.debug(f"   Response RCODE: {dns.rcode.to_text(rcode)}")
-            
+                
                 if rcode != dns.rcode.NOERROR:
                     if rcode == dns.rcode.NXDOMAIN:
                         log.info(f"❌ NXDOMAIN: {qname} does not exist")
                     else:
                         log.warning(f"⚠️  Got {dns.rcode.to_text(rcode)} from {current_zone}")
                     return response
-            
+                
                 # Got answer?
                 if response.answer:
                     # Check for CNAME
@@ -207,7 +210,7 @@ class Iterator:
                         if cname_count >= self.MAX_CNAME_CHAIN:
                             log.error(f"❌ CNAME loop detected for {qname}")
                             return self._make_servfail(qname, qtype)
-                    
+                        
                         target = cname_rr[0].target
                         log.info(f"🔗 CNAME: {current_qname} → {target}")
                         cname_chain.append(cname_rr)
@@ -216,17 +219,17 @@ class Iterator:
                         referral_count += 1
                         state = IterState.INIT
                         continue
-                
+                    
                     # Real answer
                     log.info(f"✅ Got answer for {qname} ({len(response.answer)} RRsets)")
                     state = IterState.ANSWER_RESPONSE
                     continue
-            
+                
                 # Got referral?
                 ref = self._extract_referral(response)
                 if ref:
                     ref_zone, ref_ns = ref
-                
+                    
                     # Check for progress
                     if not current_qname.is_subdomain(ref_zone):
                         # Bad referral
@@ -236,40 +239,40 @@ class Iterator:
                             for ip in ips:
                                 self.server_selection.mark_lame(ip, current_zone)
                         return self._make_servfail(qname, qtype)
-                
+                    
                     # Accept referral
                     log.info(f"➡️  Referral: {current_zone} → {ref_zone} ({len(ref_ns)} NS)")
                     current_zone = ref_zone
                     current_ns = ref_ns
                     self.ns_cache.put(ref_zone, ref_ns, ttl=86400)
                     referral_count += 1
-                
+                    
                     # Log nameservers
                     for ns_name, ips in ref_ns[:3]:  # Show first 3
                         if ips:
                             log.debug(f"   NS: {ns_name} ({', '.join(ips[:2])})")
                         else:
                             log.debug(f"   NS: {ns_name} (no glue)")
-                
+                    
                     continue
-            
+                
                 # No answer, no referral - probably NODATA
                 log.info(f"ℹ️  NODATA response for {qname}")
                 state = IterState.ANSWER_RESPONSE
-        
+            
             elif state == IterState.ANSWER_RESPONSE:
                 # Assemble final response
                 final_response = response
                 final_response.question = [dns.rrset.RRset(qname, dns.rdataclass.IN, qtype)]
-            
+                
                 if cname_chain:
                     final_response.answer = cname_chain + list(response.answer)
-            
+                
                 # DNSSEC validation
                 if self.validator:
                     log.info(f"🔐 Starting DNSSEC validation for {qname}")
                     status, validated = await self.validator.validate(final_response, str(qname), qtype, log)
-                
+                    
                     if status == ValidationStatus.BOGUS:
                         log.error(f"❌ DNSSEC validation FAILED (BOGUS) for {qname}")
                         if self.validator.is_enforcing():
@@ -278,12 +281,12 @@ class Iterator:
                         log.info(f"✅ DNSSEC validation PASSED (SECURE) - AD flag set")
                     elif status == ValidationStatus.INSECURE:
                         log.info(f"ℹ️  Zone is INSECURE (no DNSSEC)")
-                
+                    
                     if validated:
                         final_response = validated
-            
+                
                 return final_response
-    
+        
         return self._make_servfail(qname, qtype)
     
     def _minimize_qname(self, qname: dns.name.Name, zone: dns.name.Name):
@@ -304,13 +307,13 @@ class Iterator:
     
     async def _query_nameservers(self, qname: dns.name.Name, qtype: int, nameservers: List[Tuple[str, List[str]]], log):
         """Query list of nameservers, return first good response"""
-        # Flatten to IPs, resolving glueless NS
         all_ips = []
+        
         for ns_name, ips in nameservers:
             if ips:
                 all_ips.extend(ips)
             else:
-                # No glue - need to resolve nameserver
+                # No glue - resolve with caching
                 log.debug(f"   🔍 Resolving glueless NS: {ns_name}")
                 resolved_ips = await self._resolve_nameserver(ns_name, log)
                 if resolved_ips:
@@ -318,94 +321,132 @@ class Iterator:
                     all_ips.extend(resolved_ips)
                 else:
                     log.debug(f"   ❌ Failed to resolve {ns_name}")
-    
+        
         if not all_ips:
             log.warning(f"   ⚠️  No IPs available for any nameserver")
             return None
-    
+        
         # Try best server first
         best_ip = self.server_selection.select_target(all_ips, qname)
         if best_ip:
             result = await self._query_single(best_ip, qname, qtype, log)
             if result:
                 return result
-    
+        
         # Fallback to random selection
         random.shuffle(all_ips)
         for ip in all_ips[:3]:  # Try up to 3 servers
             result = await self._query_single(ip, qname, qtype, log)
             if result:
                 return result
-    
+        
         return None
-
+    
     async def _resolve_nameserver(self, ns_name: str, log) -> List[str]:
         """
-        Resolve a nameserver name to IP addresses.
-        This is a sub-query that doesn't trigger validation (to avoid loops).
+        Resolve a nameserver name to IP addresses efficiently.
+        Uses parallel A+AAAA queries and aggressive caching.
         """
         try:
+            # Check if we already resolved this NS recently
+            if ns_name in self._ns_ip_cache:
+                ips, expiry = self._ns_ip_cache[ns_name]
+                if time.time() < expiry:
+                    log.debug(f"      📦 NS IP cache hit: {ns_name}")
+                    return ips
+            
             ns_name_obj = dns.name.from_text(ns_name)
             ips = []
-        
-            # Try A record
-            log.debug(f"      Querying A for {ns_name}")
-            a_response = await self._resolve_iterative_internal(ns_name_obj, dns.rdatatype.A, log)
-            if a_response and a_response.answer:
-                for rrset in a_response.answer:
-                    if rrset.rdtype == dns.rdatatype.A:
-                        for rdata in rrset:
-                            ips.append(rdata.to_text())
-        
-            # Try AAAA record if IPv6 preferred
+            
+            # Query A and AAAA in parallel
+            log.debug(f"      🔍 Resolving {ns_name} (parallel A+AAAA)")
+            
+            tasks = [
+                self._resolve_iterative_internal(ns_name_obj, dns.rdatatype.A, log),
+            ]
+            
             if self.prefer_ipv6:
-                log.debug(f"      Querying AAAA for {ns_name}")
-                aaaa_response = await self._resolve_iterative_internal(ns_name_obj, dns.rdatatype.AAAA, log)
-                if aaaa_response and aaaa_response.answer:
+                tasks.append(self._resolve_iterative_internal(ns_name_obj, dns.rdatatype.AAAA, log))
+            
+            # Wait for both queries
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Extract IPs from A response
+            if len(results) > 0 and results[0] and not isinstance(results[0], Exception):
+                a_response = results[0]
+                if a_response.answer:
+                    for rrset in a_response.answer:
+                        if rrset.rdtype == dns.rdatatype.A:
+                            for rdata in rrset:
+                                ips.append(rdata.to_text())
+            
+            # Extract IPs from AAAA response
+            if len(results) > 1 and results[1] and not isinstance(results[1], Exception):
+                aaaa_response = results[1]
+                if aaaa_response.answer:
                     for rrset in aaaa_response.answer:
                         if rrset.rdtype == dns.rdatatype.AAAA:
                             for rdata in rrset:
                                 ips.append(rdata.to_text())
-        
+            
+            if ips:
+                log.debug(f"      ✅ Resolved {ns_name} → {len(ips)} IPs")
+                # Cache for 5 minutes
+                self._ns_ip_cache[ns_name] = (ips, time.time() + 300)
+            else:
+                log.debug(f"      ❌ No IPs found for {ns_name}")
+                # Cache negative result for 1 minute
+                self._ns_ip_cache[ns_name] = ([], time.time() + 60)
+            
             return ips
-        
+            
         except Exception as e:
             log.debug(f"      ❌ Exception resolving {ns_name}: {e}")
             return []
-
-    async def _resolve_iterative_internal(self, qname: dns.name.Name, qtype: int, log):
+    
+    async def _resolve_iterative_internal(self, qname: dns.name.Name, qtype: int, log, depth=0):
         """
         Internal iterative resolution without validation.
         Used to resolve nameserver names (to avoid circular dependencies).
+        
+        Args:
+            depth: Recursion depth limit (prevents infinite loops)
         """
+        # Prevent infinite loops
+        if depth > 10:
+            log.debug(f"      ⚠️  Max depth reached resolving {qname}")
+            return None
+        
         state = IterState.INIT
         current_qname = qname
         referral_count = 0
-    
+        
         current_zone = dns.name.root
         current_ns = self.root_hints.get_servers(self.prefer_ipv6)
-    
-        while state != IterState.FINISHED and referral_count < self.MAX_REFERRALS:
+        
+        while state != IterState.FINISHED and referral_count < 15:  # Lower limit for internal queries
             if state == IterState.INIT:
                 cached_zone, cached_ns = self.ns_cache.find_deepest_match(current_qname)
                 if cached_zone:
                     current_zone = cached_zone
                     current_ns = cached_ns
                 state = IterState.QUERY_NS
-        
+            
             elif state == IterState.QUERY_NS:
                 # Simple query without QNAME minimization
-                response = await self._query_nameservers_simple(current_qname, qtype, current_ns, log)
-            
+                response = await self._query_nameservers_simple(current_qname, qtype, current_ns, log, depth)
+                
                 if not response:
                     return None
-            
+                
                 if response.rcode() != dns.rcode.NOERROR:
                     return response
-            
+                
+                # Got answer
                 if response.answer:
                     return response
-            
+                
+                # Got referral
                 ref = self._extract_referral(response)
                 if ref:
                     ref_zone, ref_ns = ref
@@ -416,33 +457,78 @@ class Iterator:
                     self.ns_cache.put(ref_zone, ref_ns, ttl=86400)
                     referral_count += 1
                     continue
-            
+                
+                # No answer, no referral
                 return response
-    
+        
         return None
-
-    async def _query_nameservers_simple(self, qname: dns.name.Name, qtype: int, nameservers: List[Tuple[str, List[str]]], log):
+    
+    async def _query_nameservers_simple(self, qname: dns.name.Name, qtype: int, nameservers: List[Tuple[str, List[str]]], log, depth=0):
         """
-        Simple nameserver query - only uses nameservers with glue.
-        Doesn't trigger recursive NS resolution (to avoid infinite loops).
+        Simple nameserver query - handles glueless with depth limiting.
         """
         all_ips = []
+        
         for ns_name, ips in nameservers:
-            if ips:  # Only use nameservers that already have IPs
+            if ips:
+                # Has glue - use it
                 all_ips.extend(ips)
-    
+            elif depth < 3:  # Only resolve NS if not too deep
+                # No glue - resolve it (with depth limit)
+                log.debug(f"      {'  ' * depth}🔍 Resolving glueless NS: {ns_name} (depth={depth})")
+                resolved_ips = await self._resolve_nameserver_limited(ns_name, log, depth + 1)
+                if resolved_ips:
+                    all_ips.extend(resolved_ips)
+        
         if not all_ips:
             return None
-    
+        
         # Try a few servers
         random.shuffle(all_ips)
         for ip in all_ips[:3]:
             result = await self._query_single(ip, qname, qtype, log)
             if result:
                 return result
-    
+        
         return None
-
+    
+    async def _resolve_nameserver_limited(self, ns_name: str, log, depth: int) -> List[str]:
+        """Resolve NS with depth limiting to prevent loops"""
+        # Check cache first
+        if ns_name in self._ns_ip_cache:
+            ips, expiry = self._ns_ip_cache[ns_name]
+            if time.time() < expiry:
+                return ips
+        
+        # Prevent deep recursion
+        if depth > 5:
+            log.debug(f"      {'  ' * depth}⚠️  NS resolution depth limit for {ns_name}")
+            return []
+        
+        try:
+            ns_name_obj = dns.name.from_text(ns_name)
+            ips = []
+            
+            # Only query A for efficiency in deep recursion
+            a_response = await self._resolve_iterative_internal(ns_name_obj, dns.rdatatype.A, log, depth)
+            if a_response and a_response.answer:
+                for rrset in a_response.answer:
+                    if rrset.rdtype == dns.rdatatype.A:
+                        for rdata in rrset:
+                            ips.append(rdata.to_text())
+            
+            # Cache result
+            if ips:
+                self._ns_ip_cache[ns_name] = (ips, time.time() + 300)
+            else:
+                self._ns_ip_cache[ns_name] = ([], time.time() + 60)
+            
+            return ips
+            
+        except Exception as e:
+            log.debug(f"      {'  ' * depth}❌ Exception: {e}")
+            return []
+    
     async def _query_single(self, ip: str, qname: dns.name.Name, qtype: int, log):
         """Query single server"""
         query = dns.message.make_query(qname, qtype, want_dnssec=True)
