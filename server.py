@@ -125,7 +125,7 @@ async def init_recursive_resolver(config: dict, upstream_manager: UpstreamManage
         return None
     
     try:
-        from recursive_resolver import RecursiveResolver
+        from recursive.recursive import RecursiveResolver
         
         logger.info(">>> Initializing Recursive Resolver")
         # Pass upstream_manager to resolver for fallback support
