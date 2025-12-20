@@ -2,15 +2,14 @@
 # filename: recursive_resolver.py
 # -----------------------------------------------------------------------------
 # Project: Filtering DNS Server
-# Version: 2.4.0 (Iterative Refactor - Fix Recursion Depth)
+# Version: 2.5.0 (Performance Optimizations)
 # -----------------------------------------------------------------------------
 """
-Iterative DNS resolver with SRTT tracking, offloaded DNSSEC validation,
-and configurable forwarding fallback. Supports DNSSEC validation even during forwarding.
-Uses UpstreamManager for robust fallback.
-
-REFACTOR NOTE: 'resolve_iterative' is now truly iterative (loop-based) 
-to prevent Python recursion depth errors during long CNAME chains or loops.
+Iterative DNS resolver with performance optimizations:
+- Circuit breaker for failing nameservers
+- Timeout management (separate DNSSEC timeout)
+- ThreadPoolExecutor for DNSSEC crypto
+- Fixed validation infinite loop
 """
 
 import asyncio
@@ -18,8 +17,9 @@ import socket
 import random
 import time
 import logging
-from typing import Optional, Dict, List, Tuple, Union
-from concurrent.futures import ProcessPoolExecutor
+from typing import Optional, Dict, List, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 
 import dns.message
 import dns.name
@@ -42,69 +42,95 @@ def get_crypto_executor():
     global _CRYPTO_EXECUTOR
     if _CRYPTO_EXECUTOR is None:
         import multiprocessing
-        # Limit workers to avoid context switching overhead
-        workers = max(1, multiprocessing.cpu_count() // 2)
-        _CRYPTO_EXECUTOR = ProcessPoolExecutor(max_workers=workers)
+        # Use ThreadPoolExecutor instead of ProcessPoolExecutor
+        # dnspython crypto is fast enough, ProcessPool has huge IPC overhead
+        workers = max(2, multiprocessing.cpu_count() // 2)
+        _CRYPTO_EXECUTOR = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="DNSSEC")
     return _CRYPTO_EXECUTOR
 
-class SRTTTracker:
-    """
-    Tracks Smoothed Round Trip Time (SRTT) for nameservers.
-    Formula: SRTT = (Old_SRTT * 0.7) + (New_RTT * 0.3)
-    """
-    def __init__(self):
-        self._rtt = {}  # IP -> float (latency in seconds)
-        self._default_rtt = 0.5  # 500ms penalty for unknown servers
 
+class CircuitBreaker:
+    """Prevent queries to consistently failing nameservers"""
+    
+    def __init__(self, failure_threshold=3, recovery_time=60):
+        self.failures: Dict[str, int] = {}
+        self.blocked_until: Dict[str, float] = {}
+        self.threshold = failure_threshold
+        self.recovery = recovery_time
+    
+    def is_blocked(self, ip: str) -> bool:
+        """Check if IP is currently blocked"""
+        if ip not in self.blocked_until:
+            return False  # Not blocked if never failed
+        
+        # Check if recovery period passed
+        if time.time() > self.blocked_until[ip]:
+            del self.blocked_until[ip]
+            self.failures[ip] = 0
+            logger.debug(f"Circuit breaker: {ip} recovered")
+            return False
+        
+        return True  # Still blocked
+    
+    def record_failure(self, ip: str):
+        """Record failure and potentially block IP"""
+        self.failures[ip] = self.failures.get(ip, 0) + 1
+        
+        if self.failures[ip] >= self.threshold:
+            self.blocked_until[ip] = time.time() + self.recovery
+            logger.warning(f"Circuit breaker: Blocking {ip} for {self.recovery}s after {self.failures[ip]} failures")
+    
+    def record_success(self, ip: str):
+        """Reset failure counter on success"""
+        if ip in self.failures and self.failures[ip] > 0:
+            logger.debug(f"Circuit breaker: {ip} success, clearing {self.failures[ip]} failures")
+        self.failures[ip] = 0
+        if ip in self.blocked_until:
+            del self.blocked_until[ip]
+
+
+class SRTTTracker:
+    """Tracks Smoothed Round Trip Time (SRTT) for nameservers"""
+    
+    def __init__(self):
+        self._rtt = {}
+        self._default_rtt = 0.5
+    
     def update(self, ip: str, duration: float):
         if ip in self._rtt:
             self._rtt[ip] = (self._rtt[ip] * 0.7) + (duration * 0.3)
         else:
             self._rtt[ip] = duration
-
+    
     def get(self, ip: str) -> float:
         return self._rtt.get(ip, self._default_rtt)
-
+    
     def sort_nameservers(self, nameservers: List[Tuple[str, List[str]]]) -> List[Tuple[str, List[str]]]:
-        """
-        Sorts nameservers based on the lowest RTT of their IPs.
-        Structure: [(ns_name, [ip1, ip2]), ...]
-        """
-        scored_ns = []
-        for name, ips in nameservers:
-            if not ips:
-                continue
-            # Score is the best (lowest) RTT among the NS's IPs
-            best_ip_rtt = min([self.get(ip) for ip in ips])
-            scored_ns.append((best_ip_rtt, name, ips))
-        
-        # Sort by RTT ascending, then random shuffle for equal RTTs to spread load
-        scored_ns.sort(key=lambda x: x[0])
-        
-        # Return simplified list
-        return [(name, ips) for _, name, ips in scored_ns]
+        return sorted(nameservers, key=lambda x: min([self.get(ip) for ip in x[1]] or [999]))
+
 
 class NSCache:
-    """Cache for nameserver records discovered during resolution"""
-    def __init__(self, max_size: int = 10000):
-        self.cache: Dict[str, Tuple[List[Tuple[str, List[str]]], float]] = {}
-        self.max_size = max_size
+    """LRU cache for nameserver records"""
     
-    def get(self, zone: str) -> Optional[List[Tuple[str, List[str]]]]:
+    def __init__(self, max_size=10000):
+        self.max_size = max_size
+        self.cache: OrderedDict = OrderedDict()
+    
+    def get(self, zone: str):
         zone = zone.lower().rstrip('.') + '.'
         if zone in self.cache:
             ns_list, expiry = self.cache[zone]
-            if time.time() < expiry: return ns_list
+            if time.time() < expiry:
+                return ns_list
             del self.cache[zone]
         return None
     
     def put(self, zone: str, ns_records: List[Tuple[str, List[str]]], ttl: int = 86400):
         zone = zone.lower().rstrip('.') + '.'
-        # Simple eviction
         if len(self.cache) >= self.max_size and zone not in self.cache:
-            self.cache.pop(next(iter(self.cache)))
+            self.cache.popitem(last=False)
         self.cache[zone] = (ns_records, time.time() + ttl)
-
+    
     def get_deepest_match(self, qname: dns.name.Name) -> Tuple[dns.name.Name, List[Tuple[str, List[str]]]]:
         current = qname
         while True:
@@ -121,10 +147,13 @@ class NSCache:
                 break
         return None, None
 
+
 class RecursiveResolver:
-    MAX_REFERRALS = 30  # Increased slightly to handle complex CNAME chains
-    MAX_CNAMES = 10     # Max CNAMEs to follow
+    MAX_REFERRALS = 30
+    MAX_CNAMES = 10
     QUERY_TIMEOUT = 4.0
+    DNSSEC_QUERY_TIMEOUT = 2.0  # Shorter timeout for DNSSEC
+    TOTAL_TIMEOUT = 15.0  # Absolute max
     
     def __init__(self, config: dict, upstream_manager):
         self.config = config or {}
@@ -133,7 +162,6 @@ class RecursiveResolver:
         self.qm_mode = self.config.get('qname_minimization', 'strict').lower()
         self.prefer_ipv6 = self.config.get('prefer_ipv6', False)
         
-        # Fallback configuration
         self.fallback_enabled = self.config.get('fallback_enabled', False)
         self.fallback_group = self.config.get('fallback_group', 'Default')
         
@@ -145,12 +173,17 @@ class RecursiveResolver:
         
         self.ns_cache = NSCache(max_size=self.config.get('ns_cache_size', 10000))
         self.srtt = SRTTTracker()
-        
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=self.config.get('circuit_breaker_threshold', 3),
+            recovery_time=self.config.get('circuit_breaker_recovery', 60)
+        )
+    
     async def initialize(self) -> bool:
-        if not self.enabled: return True
+        if not self.enabled:
+            return True
         
-        # Initialize dependencies
-        if not await self.root_hints.initialize(): return False
+        if not await self.root_hints.initialize():
+            return False
         await self.trust_anchor_manager.initialize()
         
         if self.dnssec_mode != 'none':
@@ -159,140 +192,101 @@ class RecursiveResolver:
                 trust_anchors=self.trust_anchor_manager.get_trust_anchors(),
                 query_func=self._raw_query_shim 
             )
-            # Ensure executor is spun up
             get_crypto_executor()
-            
+        
         await self.root_hints.start_refresh_task()
         await self.trust_anchor_manager.start_refresh_task()
         return True
     
     async def resolve(self, qname: str, qtype: int, req_logger=None) -> Optional[dns.message.Message]:
+        """Main entry with total timeout"""
         log = req_logger or logger
-        if not self.enabled: return None
+        if not self.enabled:
+            return None
         
         qname_obj = dns.name.from_text(qname)
         log.info(f"Recursive resolve: {qname} [{dns.rdatatype.to_text(qtype)}]")
         
         try:
-            # 1. Attempt Iterative Resolution
-            response = await self._resolve_iterative(qname_obj, qtype, log)
-            if response and response.rcode() != dns.rcode.SERVFAIL:
-                return response
-            
-            # 2. Fallback to Forwarding if enabled and recursive failed
-            if self.fallback_enabled:
-                log.warning(f"Recursive resolution failed for {qname}, attempting fallback to group '{self.fallback_group}'")
-                fallback_response = await self._resolve_fallback(qname_obj, qtype, log)
-                if fallback_response:
-                    log.info(f"Fallback resolution successful for {qname}")
-                    return await self._finalize_response(fallback_response, qname_obj, qtype, log)
-                
-            return self._make_servfail(qname_obj, qtype)
-        except Exception as e:
-            log.error(f"Resolution failed for {qname}: {e}")
-            if self.fallback_enabled:
-                 log.warning(f"Exception during recursion, attempting fallback to group '{self.fallback_group}' for {qname}")
-                 try:
-                     fallback_response = await self._resolve_fallback(qname_obj, qtype, log)
-                     return await self._finalize_response(fallback_response, qname_obj, qtype, log)
-                 except:
-                     pass
-            return self._make_servfail(qname_obj, qtype)
-
-    async def _resolve_fallback(self, qname: dns.name.Name, qtype: int, log) -> Optional[dns.message.Message]:
-        """Forward query to fallback upstream group via UpstreamManager"""
-        # CRITICAL: Set want_dnssec=True. This sets the DO bit so upstream sends signatures.
-        query = dns.message.make_query(qname, qtype, want_dnssec=True)
-        query.flags |= dns.flags.RD # Recursive Desired for the forwarder
-        
-        try:
-            # Use UpstreamManager to handle the complexity of DoH/DoT/LoadBalancing
-            # We don't have client IP context here easily, so we use a placeholder or None.
-            # qid=0 because it's a new query generated here.
-            raw_response = await self.upstream_manager.forward_query(
-                query.to_wire(), 
-                qid=0, 
-                client_ip="127.0.0.1", 
-                upstream_group=self.fallback_group, 
-                req_logger=log
+            return await asyncio.wait_for(
+                self._resolve_with_fallback(qname_obj, qtype, log),
+                timeout=self.TOTAL_TIMEOUT
             )
-            
-            if raw_response:
-                return dns.message.from_wire(raw_response)
-        
+        except asyncio.TimeoutError:
+            log.error(f"Total resolution timeout ({self.TOTAL_TIMEOUT}s) for {qname}")
+            return self._make_servfail(qname_obj, qtype)
+    
+    async def _resolve_with_fallback(self, qname_obj, qtype, log):
+        """Resolution with fallback logic"""
+        try:
+            response = await self._resolve_iterative(qname_obj, qtype, log)
+            if response and response.rcode() == dns.rcode.NOERROR:
+                return response
         except Exception as e:
-            log.error(f"Fallback forwarding error: {e}")
-            
-        return None
-
-    async def _resolve_iterative(self, qname: dns.name.Name, qtype: int, log) -> Optional[dns.message.Message]:
-        """
-        Iterative resolution loop. 
-        Flattened to handle CNAME restarts without recursion.
-        """
+            log.warning(f"Recursive resolution failed: {e}")
+        
+        if self.fallback_enabled and self.upstream_manager:
+            log.info(f"Falling back to upstream group: {self.fallback_group}")
+            msg = await self.upstream_manager.resolve(
+                str(qname_obj), qtype, group=self.fallback_group, logger=log
+            )
+            if msg:
+                return dns.message.from_wire(msg)
+        
+        return self._make_servfail(qname_obj, qtype)
+    
+    async def _resolve_iterative(self, qname, qtype, log, skip_validation=False):
+        """Iterative resolution (loop-based to prevent stack overflow)"""
         original_qname = qname
         current_qname = qname
         accumulated_cnames = []
         cname_count = 0
+        chain_length = 0
         
-        # Outer loop handles CNAME restarts
-        while cname_count <= self.MAX_CNAMES:
+        resolved_response = None
+        
+        while cname_count < self.MAX_CNAMES and chain_length < self.MAX_REFERRALS:
+            cached_match_zone, cached_ns = self.ns_cache.get_deepest_match(current_qname)
             
-            # --- Start from Cache or Root ---
-            cached_zone, cached_ns = self.ns_cache.get_deepest_match(current_qname)
-            if cached_zone and cached_ns:
-                current_zone = cached_zone
+            if cached_match_zone:
+                current_zone = cached_match_zone
                 nameservers = cached_ns
             else:
                 current_zone = dns.name.root
                 nameservers = self._get_root_nameservers()
-
-            chain_length = 0
             
-            # QNAME Minimization State
-            target_labels = list(current_qname.labels)
-            if target_labels and target_labels[-1] == b'': target_labels.pop() # Remove root label
+            current_depth = len(current_zone.labels) - 1
+            target_labels = current_qname.labels
             
-            # Calculate starting depth
-            current_depth = len(current_zone.labels) - 1 # -1 for root
-            if current_depth < 0: current_depth = 0
-            
-            resolved_response = None
-            
-            # Inner loop handles delegations (referrals)
             while chain_length < self.MAX_REFERRALS:
                 chain_length += 1
                 
-                # Smart Ordering based on SRTT
-                nameservers = self.srtt.sort_nameservers(nameservers)
+                if self.qm_mode == 'off':
+                    q_name_current = current_qname
+                    q_type_current = qtype
+                else:
+                    if current_depth >= len(target_labels):
+                        q_name_current = current_qname
+                        q_type_current = qtype
+                    else:
+                        depth_from_right = len(target_labels) - current_depth
+                        q_name_current = dns.name.Name(target_labels[-depth_from_right:])
+                        q_type_current = dns.rdatatype.A
                 
-                # --- QNAME Minimization Logic ---
-                q_name_current = current_qname
-                q_type_current = qtype
-                
-                # If enabled, not at target, and not a special type
-                if (self.qm_mode != 'off' and current_depth < len(target_labels)):
-                    # Ask for one label deeper than current zone
-                    min_labels = target_labels[-(current_depth + 1):] + [b'']
-                    q_name_current = dns.name.Name(min_labels)
-                    q_type_current = dns.rdatatype.A # Check existence
-                
-                # Do the query
                 response, used_server_ip = await self._query_any_server(nameservers, q_name_current, q_type_current, log)
                 
                 if not response:
-                    # If minimization failed due to timeout/SERVFAIL, try full QNAME if relaxed
                     if self.qm_mode == 'relaxed' and q_name_current != current_qname:
-                        log.debug(f"Minimization failed for {q_name_current}, trying full QNAME")
-                        current_depth = len(target_labels) # Force full QNAME
+                        log.debug(f"Minimization failed, trying full QNAME")
+                        current_depth = len(target_labels)
                         continue
-                        
+                    
                     log.warning(f"Failed to get response for {q_name_current} from {current_zone}")
                     return None
-
+                
                 rcode = response.rcode()
-
-                # --- Handle Referrals ---
+                
+                # Referral
                 referral = self._extract_referral(response)
                 if referral:
                     new_zone, new_ns = referral
@@ -301,40 +295,30 @@ class RecursiveResolver:
                         log.warning("Loop: Referral to same zone")
                         break
                     
-                    # Cache the NS records
                     self.ns_cache.put(str(new_zone), new_ns)
-                    
                     current_zone = new_zone
                     nameservers = new_ns
                     current_depth = len(new_zone.labels) - 1
                     continue
-
-                # --- Handle NXDOMAIN ---
+                
+                # NXDOMAIN
                 if rcode == dns.rcode.NXDOMAIN:
-                    # If doing minimization, this might be an Empty Non-Terminal issue or real NXDOMAIN
                     if q_name_current != current_qname:
                         if self.qm_mode == 'relaxed':
-                             current_depth = len(target_labels) # Force full QNAME
-                             continue
-                        # strict mode accepts NXDOMAIN
-                    
-                    # Real NXDOMAIN for target
-                    return await self._finalize_response(response, original_qname, qtype, log, accumulated_cnames)
-
-                # --- Handle NOERROR ---
+                            current_depth = len(target_labels)
+                            continue
+                    return await self._finalize_response(response, original_qname, qtype, log, accumulated_cnames, skip_validation)
+                
+                # NOERROR
                 if rcode == dns.rcode.NOERROR:
-                    # If minimization query succeeded, increase depth and continue
                     if q_name_current != current_qname:
                         current_depth += 1
                         continue
                     
-                    # We have the final answer, OR a CNAME
                     cname_rr = self._find_cname(response, current_qname)
                     if cname_rr:
                         target = cname_rr[0].target
-                        target_str = str(target)
                         
-                        # Loop detection in accumulated CNAMEs
                         if any(rr[0].target == target for rr in accumulated_cnames):
                             log.error(f"CNAME Loop detected: {target}")
                             return self._make_servfail(original_qname, qtype)
@@ -343,149 +327,166 @@ class RecursiveResolver:
                         accumulated_cnames.append(cname_rr)
                         current_qname = target
                         cname_count += 1
-                        resolved_response = None # Reset to loop again for new name
-                        break # Break inner loop to restart with new qname
+                        resolved_response = None
+                        break
                     
-                    # Final non-CNAME answer
-                    return await self._finalize_response(response, original_qname, qtype, log, accumulated_cnames)
+                    return await self._finalize_response(response, original_qname, qtype, log, accumulated_cnames, skip_validation)
                 
-                # Other RCODES (e.g. SERVFAIL from upstream)
-                return self._make_servfail(original_qname, qtype)
-
-            # Check if we broke inner loop due to CNAME
+                # Other errors
+                log.warning(f"Got RCODE {dns.rcode.to_text(rcode)} from {current_zone}")
+                return await self._finalize_response(response, original_qname, qtype, log, accumulated_cnames, skip_validation)
+            
             if cname_count > self.MAX_CNAMES:
                 log.error("Max CNAME depth exceeded")
                 return self._make_servfail(original_qname, qtype)
-                
+            
             if not resolved_response and chain_length >= self.MAX_REFERRALS:
-                 log.error("Max referrals exceeded")
-                 return self._make_servfail(original_qname, qtype)
-
+                log.error("Max referrals exceeded")
+                return self._make_servfail(original_qname, qtype)
+        
         return self._make_servfail(original_qname, qtype)
-
+    
     async def _query_any_server(self, nameservers, qname, qtype, log) -> Tuple[Optional[dns.message.Message], str]:
-        """Try nameservers in order until one responds"""
+        """Try nameservers with circuit breaker and glue resolution"""
         query = dns.message.make_query(qname, qtype, want_dnssec=True)
-        # Don't set RD flag for iterative queries
         wire = query.to_wire()
         
+        total_tried = 0
+        total_blocked = 0
+        
         for ns_name, ips in nameservers:
-            # Sort IPs by RTT (IPv6 preferred if configured)
-            sorted_ips = sorted(ips, key=lambda ip: (':' not in ip if self.prefer_ipv6 else ':' in ip, self.srtt.get(ip)))
+            # Resolve nameserver IPs if missing (glue-less delegation)
+            if not ips:
+                log.debug(f"Nameserver {ns_name} has no glue, resolving...")
+                resolved_ips = await self._resolve_nameserver(ns_name, log)
+                if resolved_ips:
+                    ips = resolved_ips
+                    log.debug(f"Resolved {ns_name} to {ips}")
+                else:
+                    log.debug(f"Failed to resolve {ns_name}, skipping")
+                    continue
+            
+            available_ips = [ip for ip in ips if not self.circuit_breaker.is_blocked(ip)]
+            blocked_count = len(ips) - len(available_ips)
+            total_blocked += blocked_count
+            
+            if not available_ips:
+                log.debug(f"All {len(ips)} IPs for {ns_name} circuit-broken")
+                continue
+            
+            if blocked_count > 0:
+                log.debug(f"Nameserver {ns_name}: {blocked_count}/{len(ips)} IPs blocked")
+            
+            sorted_ips = sorted(
+                available_ips,
+                key=lambda ip: (':' not in ip if self.prefer_ipv6 else ':' in ip, self.srtt.get(ip))
+            )
             
             for ip in sorted_ips:
+                total_tried += 1
                 t0 = time.time()
                 try:
                     resp_wire = await self._udp_query(ip, wire)
                     if resp_wire:
-                        # Success
                         duration = time.time() - t0
                         self.srtt.update(ip, duration)
+                        self.circuit_breaker.record_success(ip)
                         
                         msg = dns.message.from_wire(resp_wire)
-                        # Handle TC bit (Truncated) -> Retry TCP
                         if msg.flags & dns.flags.TC:
                             resp_wire_tcp = await self._tcp_query(ip, wire)
                             if resp_wire_tcp:
                                 msg = dns.message.from_wire(resp_wire_tcp)
                                 return msg, ip
-                        
-                        return msg, ip
+                        else:
+                            return msg, ip
                     else:
-                        # Timeout
-                        self.srtt.update(ip, 2.0) # Penalty
-                except Exception as e:
-                    self.srtt.update(ip, 2.0) # Penalty
+                        self.srtt.update(ip, 2.0)
+                        self.circuit_breaker.record_failure(ip)
+                except Exception:
+                    self.srtt.update(ip, 2.0)
+                    self.circuit_breaker.record_failure(ip)
                     continue
-                    
-        return None, None
-
-    async def _finalize_response(self, response, original_qname, qtype, log, accumulated_cnames=None):
-        """Perform DNSSEC validation and cleanup"""
-        if not response: return None
         
-        # Restore Question (in case of minimization or CNAME)
+        if total_tried == 0:
+            log.warning(f"No nameservers available for {qname} (blocked: {total_blocked})")
+        
+        return None, None
+    
+    async def _finalize_response(self, response, original_qname, qtype, log, accumulated_cnames=None, skip_validation=False):
+        """Perform DNSSEC validation and cleanup"""
+        if not response:
+            return None
+        
         response.question = [dns.rrset.RRset(original_qname, dns.rdataclass.IN, qtype)]
         
-        # Prepend CNAME chain if exists
         if accumulated_cnames:
             response.answer = accumulated_cnames + list(response.answer)
         
-        if self.dnssec_mode != 'none' and self.dnssec_validator:
-            # OFFLOAD CPU-INTENSIVE VALIDATION TO EXECUTOR
-            loop = asyncio.get_running_loop()
-            executor = get_crypto_executor()
+        # Skip validation for internal DNSSEC queries
+        if skip_validation or self.dnssec_mode == 'none' or not self.dnssec_validator:
+            return response
+        
+        try:
+            status, validated_response = await self.dnssec_validator.validate_response(
+                response, str(original_qname), qtype, log
+            )
             
-            try:
-                status, validated_response = await self.dnssec_validator.validate_response(response, str(original_qname), qtype, log)
-                
-                if status == DNSSECStatus.BOGUS and self.dnssec_mode in ['standard', 'strict']:
-                    log.error(f"DNSSEC Failure (BOGUS) for {original_qname}")
-                    return self._make_servfail(original_qname, qtype)
-                
-                if validated_response:
-                    response = validated_response
-            except Exception as e:
-                log.error(f"DNSSEC Validation crashed: {e}")
-                if self.dnssec_mode == 'strict':
-                    return self._make_servfail(original_qname, qtype)
-
+            if status == DNSSECStatus.BOGUS and self.dnssec_mode in ['standard', 'strict']:
+                log.error(f"DNSSEC Failure (BOGUS) for {original_qname}")
+                return self._make_servfail(original_qname, qtype)
+            
+            if validated_response:
+                response = validated_response
+        except Exception as e:
+            log.error(f"DNSSEC Validation crashed: {e}")
+            if self.dnssec_mode == 'strict':
+                return self._make_servfail(original_qname, qtype)
+        
         return response
-
-    def _get_root_nameservers(self):
-        return [(s.name, s.get_ips(self.prefer_ipv6)) for s in self.root_hints.root_servers]
-
+    
     def _extract_referral(self, response):
-        """Extract referral zone and NS IPs from response"""
         ns_rrset = None
         for rr in response.authority:
             if rr.rdtype == dns.rdatatype.NS:
                 ns_rrset = rr
                 break
         
-        if not ns_rrset: return None
+        if not ns_rrset:
+            return None
         
         ref_zone = ns_rrset.name
         
-        # Map NS names to IPs from Additional section (Glue)
         ns_ips = {}
         for rr in response.additional:
             if rr.rdtype in (dns.rdatatype.A, dns.rdatatype.AAAA):
                 name = str(rr.name).lower()
-                if name not in ns_ips: ns_ips[name] = []
+                if name not in ns_ips:
+                    ns_ips[name] = []
                 for rd in rr:
                     ns_ips[name].append(rd.to_text())
-        
-        # For NS without glue, we need to resolve them later (not handled here for brevity, 
-        # but _query_any_server handles empty IPs by triggering internal resolve)
         
         result_ns = []
         for rd in ns_rrset:
             ns_name = str(rd.target).lower()
             ips = ns_ips.get(ns_name, [])
             result_ns.append((ns_name, ips))
-            
+        
         return ref_zone, result_ns
-
+    
     def _find_cname(self, response, qname):
         for rr in response.answer:
             if rr.rdtype == dns.rdatatype.CNAME and rr.name == qname:
                 return rr
         return None
-
-    # --- Low Level Net IO ---
+    
     async def _udp_query(self, ip, wire):
         loop = asyncio.get_running_loop()
         try:
-            # Create a connected socket for slightly better perf and error handling
             fam = socket.AF_INET6 if ':' in ip else socket.AF_INET
-            
-            # optimization: Use loop.create_datagram_endpoint for better async integration
-            # But standard sock send/recv is easier for one-off
             sock = socket.socket(fam, socket.SOCK_DGRAM)
             sock.setblocking(False)
             
-            # connect() allows us to receive ICMP errors
             await loop.sock_connect(sock, (ip, 53))
             await loop.sock_sendall(sock, wire)
             
@@ -494,7 +495,7 @@ class RecursiveResolver:
             return data
         except (asyncio.TimeoutError, OSError):
             return None
-
+    
     async def _tcp_query(self, ip, wire):
         try:
             reader, writer = await asyncio.wait_for(
@@ -512,43 +513,123 @@ class RecursiveResolver:
             return data
         except:
             return None
-
+    
     def _make_servfail(self, qname, qtype):
         r = dns.message.make_response(dns.message.make_query(qname, qtype))
         r.set_rcode(dns.rcode.SERVFAIL)
         return r
-
-    # Shim for validator to make queries
+    
     async def _raw_query_shim(self, wire):
-        # We need to parse the wire to get QNAME/QTYPE
+        """DNSSEC query shim with shorter timeout - MUST NOT trigger validation"""
         try:
             msg = dns.message.from_wire(wire)
             q = msg.question[0]
-            # Recursively resolve the key/DS lookup
-            # IMPORTANT: use _resolve_iterative with validate=False to prevent infinite validation loops
-            log_prefix = logging.LoggerAdapter(logger, {'id': 'DNSSEC', 'ip': 'Internal', 'proto': 'INT'})
-            # We must use await on the async function
-            # However, _resolve_iterative logic was changed to loop, so no validation recursion inside there
-            # BUT we should NOT validate DNSKEY/DS lookups again if we are inside validation logic
-            # To be safe, we disable validation for this internal lookup.
-            # NOTE: We can't easily pass validate=False because _resolve_iterative doesn't take it directly anymore
-            # in the refactored loop above (it was removed).
-            # Let's fix that by ensuring _finalize_response respects a validation flag or logic.
-            # But wait, _resolve_iterative calls _finalize_response which calls validation.
+            log = logging.LoggerAdapter(logger, {'id': 'DNSSEC', 'ip': 'Int', 'proto': 'INT'})
             
-            # Since _resolve_iterative signature changed, let's just use resolve() 
-            # BUT resolve() enables validation if configured. 
-            # We need a way to bypass validation for internal lookups.
-            
-            # For simplicity in this shim, we will call _resolve_iterative directly
-            # We need to hack _finalize_response logic or add a flag to _resolve_iterative.
-            
-            # Since I cannot modify _finalize_response signature easily without breaking other calls,
-            # I will trust that resolve() is okay, but it might loop.
-            # BETTER: Just call _resolve_iterative and manually strip DNSSEC if needed, 
-            # but wait... validation happens inside _finalize_response.
-            
-            # Given the constraints, let's just invoke it. The validator has cache which prevents some loops.
-            resp = await self._resolve_iterative(q.name, q.rdtype, log_prefix)
+            # CRITICAL: skip_validation=True to break infinite loop
+            resp = await asyncio.wait_for(
+                self._resolve_iterative(q.name, q.rdtype, log, skip_validation=True),
+                timeout=self.DNSSEC_QUERY_TIMEOUT
+            )
             return resp.to_wire() if resp else None
-        except: return None
+        except asyncio.TimeoutError:
+            logger.debug(f"DNSSEC query timeout for {q.name}")
+            return None
+        except:
+            return None
+    
+    def _get_root_nameservers(self):
+        return [(s.name, s.get_ips(self.prefer_ipv6)) for s in self.root_hints.root_servers]
+    
+    async def _resolve_nameserver(self, ns_name: str, log) -> List[str]:
+        """Resolve nameserver hostname to IPs (for glue-less delegations)"""
+        if not hasattr(self, '_ns_resolution_cache'):
+            self._ns_resolution_cache = {}
+        
+        ns_name_str = str(ns_name).lower().rstrip('.')
+        
+        # Check cache
+        if ns_name_str in self._ns_resolution_cache:
+            cached_ips, expiry = self._ns_resolution_cache[ns_name_str]
+            if time.time() < expiry:
+                return cached_ips
+        
+        ips = []
+        
+        # FALLBACK: Use upstream forwarder for NS resolution if recursive fails
+        # This prevents REFUSED errors from authoritative servers with ACLs
+        if self.upstream_manager:
+            try:
+                log.debug(f"Attempting upstream resolution for {ns_name_str}")
+                
+                # Try A record via upstream
+                wire = await self.upstream_manager.forward_query(
+                    dns.message.make_query(ns_name_str, dns.rdatatype.A).to_wire(),
+                    qid=0,
+                    client_ip="127.0.0.1",
+                    upstream_group="Default",
+                    req_logger=log
+                )
+                if wire:
+                    response = dns.message.from_wire(wire)
+                    for rrset in response.answer:
+                        if rrset.rdtype == dns.rdatatype.A:
+                            ips.extend([rdata.to_text() for rdata in rrset])
+                
+                # Try AAAA if needed
+                if self.prefer_ipv6 or not ips:
+                    wire = await self.upstream_manager.forward_query(
+                        dns.message.make_query(ns_name_str, dns.rdatatype.AAAA).to_wire(),
+                        qid=0,
+                        client_ip="127.0.0.1",
+                        upstream_group="Default",
+                        req_logger=log
+                    )
+                    if wire:
+                        response = dns.message.from_wire(wire)
+                        for rrset in response.answer:
+                            if rrset.rdtype == dns.rdatatype.AAAA:
+                                ips.extend([rdata.to_text() for rdata in rrset])
+                
+                if ips:
+                    log.debug(f"Upstream resolved {ns_name_str} to {ips}")
+                    self._ns_resolution_cache[ns_name_str] = (ips, time.time() + 3600)
+                    return ips
+            except Exception as e:
+                log.debug(f"Upstream resolution failed for {ns_name_str}: {e}")
+        
+        # Try recursive resolution as last resort
+        try:
+            a_response = await asyncio.wait_for(
+                self._resolve_iterative(dns.name.from_text(ns_name_str), dns.rdatatype.A, log, skip_validation=True),
+                timeout=3.0
+            )
+            if a_response and a_response.rcode() == dns.rcode.NOERROR:
+                for rrset in a_response.answer:
+                    if rrset.rdtype == dns.rdatatype.A:
+                        ips.extend([rdata.to_text() for rdata in rrset])
+        except asyncio.TimeoutError:
+            log.debug(f"Timeout resolving A for {ns_name_str}")
+        except Exception as e:
+            log.debug(f"Error resolving A for {ns_name_str}: {e}")
+        
+        if self.prefer_ipv6 or not ips:
+            try:
+                aaaa_response = await asyncio.wait_for(
+                    self._resolve_iterative(dns.name.from_text(ns_name_str), dns.rdatatype.AAAA, log, skip_validation=True),
+                    timeout=3.0
+                )
+                if aaaa_response and aaaa_response.rcode() == dns.rcode.NOERROR:
+                    for rrset in aaaa_response.answer:
+                        if rrset.rdtype == dns.rdatatype.AAAA:
+                            ips.extend([rdata.to_text() for rdata in rrset])
+            except asyncio.TimeoutError:
+                log.debug(f"Timeout resolving AAAA for {ns_name_str}")
+            except Exception as e:
+                log.debug(f"Error resolving AAAA for {ns_name_str}: {e}")
+        
+        if ips:
+            self._ns_resolution_cache[ns_name_str] = (ips, time.time() + 3600)
+        
+        return ips
+
